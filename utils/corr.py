@@ -385,3 +385,101 @@ def get_significant_correlations(
         .sort_values('correlation', key=abs, ascending=False)
         .reset_index(drop=True)
     )
+
+
+# =============================================================================
+# Usage Examples
+# =============================================================================
+
+if __name__ == '__main__':
+    # Sample data with mixed variable types
+    np.random.seed(42)
+    n = 200
+
+    df_sample = pd.DataFrame({
+        'age': np.random.normal(45, 15, n),                           # numeric
+        'income': np.random.exponential(50000, n),                    # numeric
+        'satisfaction': np.random.choice([1, 2, 3, 4, 5], n),         # ordinal
+        'education': np.random.choice(['High School', 'Bachelor', 'Master', 'PhD'], n),  # ordinal
+        'gender': np.random.choice(['M', 'F'], n),                    # categorical (binary)
+        'region': np.random.choice(['North', 'South', 'East', 'West'], n),  # categorical
+    })
+
+    # Ordinal ordering
+    education_order = ['High School', 'Bachelor', 'Master', 'PhD']
+
+    # -------------------------------------------------------------------------
+    # Example 1: Auto correlation matrix (automatic type inference)
+    # -------------------------------------------------------------------------
+    print("=" * 60)
+    print("Example 1: Auto Correlation Matrix")
+    print("=" * 60)
+
+    corr_matrix = auto_correlation_matrix(
+        df_sample,
+        ordinal_overrides={'education': education_order}
+    )
+
+    print("\nCorrelation Matrix:")
+    print(corr_matrix.round(3))
+
+    print("\nMethods Used:")
+    print(corr_matrix.attrs['methods'])
+
+    # -------------------------------------------------------------------------
+    # Example 2: Manual variable specification
+    # -------------------------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("Example 2: Manual Variable Specification")
+    print("=" * 60)
+
+    var_specs = [
+        VariableSpec('age', 'numeric'),
+        VariableSpec('income', 'numeric'),
+        VariableSpec('satisfaction', 'ordinal'),
+        VariableSpec('education', 'ordinal', order=education_order),
+        VariableSpec('gender', 'categorical'),
+    ]
+
+    corr_matrix_manual = compute_correlation_matrix(df_sample, var_specs)
+    print("\nCorrelation Matrix (manual specs):")
+    print(corr_matrix_manual.round(3))
+
+    # -------------------------------------------------------------------------
+    # Example 3: Pairwise correlation
+    # -------------------------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("Example 3: Pairwise Correlation")
+    print("=" * 60)
+
+    result = compute_pairwise_correlation(
+        df_sample,
+        VariableSpec('age', 'numeric'),
+        VariableSpec('income', 'numeric')
+    )
+    print(f"\n{result.var1} vs {result.var2}:")
+    print(f"  Method: {result.method}")
+    print(f"  Correlation: {result.correlation:.3f}")
+    print(f"  P-value: {result.p_value:.4f}")
+
+    # -------------------------------------------------------------------------
+    # Example 4: Get significant correlations
+    # -------------------------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("Example 4: Significant Correlations (|r| >= 0.1)")
+    print("=" * 60)
+
+    significant = get_significant_correlations(corr_matrix, threshold=0.1)
+    print("\n")
+    print(significant.to_string(index=False))
+
+    # -------------------------------------------------------------------------
+    # Example 5: Type inference
+    # -------------------------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("Example 5: Variable Type Inference")
+    print("=" * 60)
+
+    for col in df_sample.columns:
+        inferred = infer_variable_type(df_sample[col])
+        print(f"  {col}: {inferred}")

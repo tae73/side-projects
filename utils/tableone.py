@@ -755,3 +755,151 @@ def get_significant_variables(
         expand_categorical=expand_categorical
     )
     return filter_tableone(table, p_threshold, effect_threshold)
+
+
+# =============================================================================
+# Usage Examples
+# =============================================================================
+
+if __name__ == '__main__':
+    # Sample case-control data
+    np.random.seed(42)
+    n = 300
+
+    # Create sample data with differences between groups
+    group = np.random.choice([0, 1], n, p=[0.6, 0.4])
+
+    df_sample = pd.DataFrame({
+        'group': group,
+        'age': np.where(group == 1, np.random.normal(55, 12, n), np.random.normal(50, 10, n)),
+        'bmi': np.where(group == 1, np.random.normal(28, 5, n), np.random.normal(25, 4, n)),
+        'blood_pressure': np.where(group == 1, np.random.normal(140, 20, n), np.random.normal(120, 15, n)),
+        'cholesterol': np.random.normal(200, 40, n),  # No difference
+        'smoking': np.where(group == 1,
+                           np.random.choice(['Never', 'Former', 'Current'], n, p=[0.3, 0.3, 0.4]),
+                           np.random.choice(['Never', 'Former', 'Current'], n, p=[0.5, 0.3, 0.2])),
+        'diabetes': np.where(group == 1,
+                             np.random.choice(['Yes', 'No'], n, p=[0.35, 0.65]),
+                             np.random.choice(['Yes', 'No'], n, p=[0.15, 0.85])),
+        'exercise': np.random.choice(['Low', 'Medium', 'High'], n),  # No difference
+    })
+
+    # -------------------------------------------------------------------------
+    # Example 1: Basic Table One
+    # -------------------------------------------------------------------------
+    print("=" * 80)
+    print("Example 1: Basic Table One (Compact Format)")
+    print("=" * 80)
+
+    table1 = compute_tableone(
+        df_sample,
+        groupby='group',
+        columns=['age', 'bmi', 'blood_pressure', 'cholesterol', 'smoking', 'diabetes'],
+    )
+    print("\n")
+    print(table1.to_string(index=False))
+
+    # -------------------------------------------------------------------------
+    # Example 2: Expanded Categorical Format
+    # -------------------------------------------------------------------------
+    print("\n" + "=" * 80)
+    print("Example 2: Expanded Categorical Format")
+    print("=" * 80)
+
+    table2 = compute_tableone(
+        df_sample,
+        groupby='group',
+        columns=['age', 'smoking', 'diabetes'],
+        expand_categorical=True
+    )
+    print("\n")
+    print(table2.to_string(index=False))
+
+    # -------------------------------------------------------------------------
+    # Example 3: Without Effect Size
+    # -------------------------------------------------------------------------
+    print("\n" + "=" * 80)
+    print("Example 3: Without Effect Size Columns")
+    print("=" * 80)
+
+    table3 = compute_tableone(
+        df_sample,
+        groupby='group',
+        columns=['age', 'bmi', 'diabetes'],
+        effect_size=False
+    )
+    print("\n")
+    print(table3.to_string(index=False))
+
+    # -------------------------------------------------------------------------
+    # Example 4: Filter by Significance
+    # -------------------------------------------------------------------------
+    print("\n" + "=" * 80)
+    print("Example 4: Filter Significant Variables (p < 0.05)")
+    print("=" * 80)
+
+    significant = get_significant_variables(
+        df_sample,
+        groupby='group',
+        p_threshold=0.05
+    )
+    print("\n")
+    print(significant.to_string(index=False))
+
+    # -------------------------------------------------------------------------
+    # Example 5: Filter by Effect Size
+    # -------------------------------------------------------------------------
+    print("\n" + "=" * 80)
+    print("Example 5: Filter by Effect Size (|d| >= 0.3)")
+    print("=" * 80)
+
+    large_effect = filter_tableone(
+        table1,
+        effect_threshold=0.3
+    )
+    print("\n")
+    print(large_effect.to_string(index=False))
+
+    # -------------------------------------------------------------------------
+    # Example 6: Specify Variable Types
+    # -------------------------------------------------------------------------
+    print("\n" + "=" * 80)
+    print("Example 6: Manual Variable Type Specification")
+    print("=" * 80)
+
+    table6 = compute_tableone(
+        df_sample,
+        groupby='group',
+        columns=['age', 'bmi', 'smoking'],
+        continuous=['age', 'bmi'],
+        categorical=['smoking']
+    )
+    print("\n")
+    print(table6.to_string(index=False))
+
+    # -------------------------------------------------------------------------
+    # Example 7: Effect Size Interpretation
+    # -------------------------------------------------------------------------
+    print("\n" + "=" * 80)
+    print("Example 7: Effect Size Interpretation Guide")
+    print("=" * 80)
+    print("""
+    Cohen's d (continuous variables):
+      |d| < 0.2  : negligible
+      |d| < 0.5  : small
+      |d| < 0.8  : medium
+      |d| >= 0.8 : large
+
+    Cramér's V (categorical variables):
+      V < 0.1  : negligible
+      V < 0.3  : small
+      V < 0.5  : medium
+      V >= 0.5 : large
+
+    Odds Ratio (binary categorical):
+      OR < 0.5  : strong protective
+      OR < 0.8  : moderate protective
+      OR ~ 1.0  : negligible
+      OR > 1.25 : moderate risk
+      OR > 2.0  : strong risk
+    """)
