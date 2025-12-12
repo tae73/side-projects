@@ -31,8 +31,22 @@ class VariableSpec(NamedTuple):
     order: list | None = None  # For ordinal variables
 
 
+def _is_numeric_dtype(arr: np.ndarray) -> bool:
+    """Check if array has numeric dtype."""
+    return np.issubdtype(arr.dtype, np.floating) or np.issubdtype(arr.dtype, np.integer)
+
+
+def _assert_numeric(arr: np.ndarray, name: str) -> None:
+    """Assert array is numeric (can use np.isnan)."""
+    assert _is_numeric_dtype(arr), \
+        f"{name} must be numeric array (got {arr.dtype}). Ensure proper encoding."
+
+
 def _pearson(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
     """Pearson correlation for numeric-numeric."""
+    _assert_numeric(x, 'x')
+    _assert_numeric(y, 'y')
+
     mask = ~(np.isnan(x) | np.isnan(y))
     if mask.sum() < 3:
         return np.nan, np.nan
@@ -42,6 +56,9 @@ def _pearson(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
 
 def _spearman(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
     """Spearman correlation for ordinal-ordinal or ordinal-numeric."""
+    _assert_numeric(x, 'x')
+    _assert_numeric(y, 'y')
+
     mask = ~(np.isnan(x) | np.isnan(y))
     if mask.sum() < 3:
         return np.nan, np.nan
@@ -51,6 +68,9 @@ def _spearman(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
 
 def _point_biserial(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
     """Point-biserial correlation for binary categorical-numeric."""
+    _assert_numeric(x, 'x (binary categorical)')
+    _assert_numeric(y, 'y (numeric)')
+
     mask = ~(np.isnan(x) | np.isnan(y))
     if mask.sum() < 3:
         return np.nan, np.nan
@@ -83,6 +103,7 @@ def _correlation_ratio(categories: np.ndarray, values: np.ndarray) -> tuple[floa
     Correlation ratio (eta) for categorical-numeric.
     Measures the proportion of variance in numeric explained by categorical.
     """
+    _assert_numeric(values, 'values')
     mask = ~(pd.isna(categories) | np.isnan(values))
     categories_clean = categories[mask]
     values_clean = values[mask]
@@ -106,6 +127,7 @@ def _correlation_ratio(categories: np.ndarray, values: np.ndarray) -> tuple[floa
 
 def _rank_biserial(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
     """Rank-biserial correlation for binary categorical-ordinal."""
+    _assert_numeric(y, 'y (ordinal)')
     mask = ~(pd.isna(x) | np.isnan(y))
     x_clean, y_clean = x[mask], y[mask]
 
@@ -141,10 +163,32 @@ def _encode_categorical(series: pd.Series) -> np.ndarray:
     return series.to_numpy()
 
 
+def _encode_variable(series: pd.Series, var_spec: 'VariableSpec') -> np.ndarray:
+    """Encode variable based on its type specification."""
+    if var_spec.var_type == 'numeric':
+        return series.to_numpy(dtype=float)
+    elif var_spec.var_type == 'ordinal':
+        return _encode_ordinal(series, var_spec.order)
+    else:  # categorical
+        return _encode_categorical(series)
+
+
+def _get_unique_values(arr: np.ndarray) -> np.ndarray:
+    """Get unique non-null values from array."""
+    return pd.Series(arr).dropna().unique()
+
+
 def _is_binary(arr: np.ndarray) -> bool:
     """Check if array has exactly 2 unique non-null values."""
-    unique = pd.Series(arr).dropna().unique()
-    return len(unique) == 2
+    return len(_get_unique_values(arr)) == 2
+
+
+def _encode_binary_categorical(arr: np.ndarray, unique_vals: np.ndarray | None = None) -> np.ndarray:
+    """Encode binary categorical to numeric (0/1)."""
+    if unique_vals is None:
+        unique_vals = _get_unique_values(arr)
+    assert len(unique_vals) == 2, f"Expected binary categorical (got {len(unique_vals)} unique values)"
+    return np.where(pd.isna(arr), np.nan, (arr == unique_vals[1]).astype(float))
 
 
 def _select_method(
@@ -205,28 +249,26 @@ def compute_pairwise_correlation(
     """Compute correlation between two variables with specified types."""
 
     # Encode variables based on type
-    if var1_spec.var_type == 'numeric':
-        arr1 = df[var1_spec.name].to_numpy(dtype=float)
-    elif var1_spec.var_type == 'ordinal':
-        arr1 = _encode_ordinal(df[var1_spec.name], var1_spec.order)
-    else:
-        arr1 = _encode_categorical(df[var1_spec.name])
+    arr1 = _encode_variable(df[var1_spec.name], var1_spec)
+    arr2 = _encode_variable(df[var2_spec.name], var2_spec)
 
-    if var2_spec.var_type == 'numeric':
-        arr2 = df[var2_spec.name].to_numpy(dtype=float)
-    elif var2_spec.var_type == 'ordinal':
-        arr2 = _encode_ordinal(df[var2_spec.name], var2_spec.order)
-    else:
-        arr2 = _encode_categorical(df[var2_spec.name])
-
-    # Select method and compute
-    is_binary1 = _is_binary(arr1)
-    is_binary2 = _is_binary(arr2)
+    # Get unique values once (for binary check and potential re-encoding)
+    unique1 = _get_unique_values(arr1)
+    unique2 = _get_unique_values(arr2)
+    is_binary1 = len(unique1) == 2
+    is_binary2 = len(unique2) == 2
 
     method_fn, method_name = _select_method(
         var1_spec.var_type, var2_spec.var_type,
         is_binary1, is_binary2
     )
+
+    # Re-encode binary categorical to numeric for point_biserial (if not already numeric)
+    if method_name == 'point_biserial':
+        if is_binary1 and not _is_numeric_dtype(arr1):
+            arr1 = _encode_binary_categorical(arr1, unique1)
+        if is_binary2 and not _is_numeric_dtype(arr2):
+            arr2 = _encode_binary_categorical(arr2, unique2)
 
     corr, p_val = method_fn(arr1, arr2)
 
