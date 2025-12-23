@@ -17,6 +17,52 @@ Unlike category-specific datasets (e.g., beverage-only or frozen food-only data)
 | Stores | 7 |
 | Data Coverage | Transaction details, Demographics, Campaign exposure, Coupon redemption, Product attributes, Promotional activities |
 
+### Exploratory Data Analysis
+
+| Notebook | Description |
+|----------|-------------|
+| [exploration_1.ipynb](eda/exploration_1.ipynb) | Household Demographics & Transaction Patterns |
+| [exploration_2.ipynb](eda/exploration_2.ipynb) | Product Analysis |
+| [exploration_3.ipynb](eda/exploration_3.ipynb) | Campaign Analysis |
+| [exploration_4.ipynb](eda/exploration_4.ipynb) | Marketing Exposure Analysis |
+
+**Table of Contents:**
+
+1. Household Demographics
+   - 1.1 Data Loading & Overview
+   - 1.2 Distributions
+   - 1.3 Correlation Analysis
+2. Transaction Patterns
+   - 2.1 Data Loading & Cleaning
+   - 2.2 Household-level Analysis
+   - 2.3 Store-level Analysis
+   - 2.4 Basket-level Analysis
+   - 2.5 Time Trends
+   - 2.6 Discount Analysis
+   - 2.7 Segment Analysis & Demographics
+3. Product Analysis
+   - 3.1 Data Loading & Overview
+   - 3.2 Product Hierarchy & Distribution
+   - 3.3 Popular Products & Repeat Purchase
+   - 3.4 Product Concentration (Long-tail)
+   - 3.5 Customer-Category Relationship
+   - 3.6 Price Analysis
+   - 3.7 Discount Patterns
+4. Campaign Analysis
+   - 4.1 Data Loading & Overview
+   - 4.2 Campaign Timeline & Schedule
+   - 4.3 Campaign Targeting Analysis
+   - 4.4 Coupon Structure
+   - 4.5 Coupon Redemption Analysis
+   - 4.6 Demographic Comparison
+5. Marketing Exposure Analysis (causal_data)
+   - 5.1 Data Loading & Overview
+   - 5.2 Display & Mailer Distributions
+   - 5.3 Exposure Rate by Category
+   - 5.4 Data Quality Check (Outlier Departments)
+   - 5.5 Exposure-Sales Relationship
+   - 5.6 Combined Effects (Display × Mailer)
+
 ---
 
 ## Dataset Strengths
