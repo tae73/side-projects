@@ -1,8 +1,28 @@
-"""Customer feature engineering for segmentation."""
+"""Customer feature engineering for segmentation.
+
+This module provides feature engineering functions for both Track 1 (descriptive)
+and Track 2 (causal) analyses.
+
+Track 1 Features (33):
+    - RFM: recency, frequency, monetary (19 features + 2 auxiliary)
+    - Behavioral: price sensitivity, brand, basket (7 features)
+    - Category: macro category shares (6 features)
+    - Time: shopping regularity (1 feature)
+
+Track 2 Features:
+    - Exposure: marketing exposure from causal_data
+    - Campaign: campaign targeting indicators
+    - Outcome: redemption and purchase outcomes
+    - Demographic: household demographics
+"""
 
 import numpy as np
 import pandas as pd
 
+
+# =============================================================================
+# Constants
+# =============================================================================
 
 # Macro category mapping
 MACRO_CATEGORY = {
@@ -17,6 +37,10 @@ MACRO_CATEGORY = {
 }
 DEPT_TO_MACRO = {dept: cat for cat, depts in MACRO_CATEGORY.items() for dept in depts}
 
+
+# =============================================================================
+# Track 1: Base Features (Descriptive)
+# =============================================================================
 
 def _compute_purchase_intervals(days):
     """Compute days between consecutive purchases."""
@@ -240,8 +264,610 @@ def build_all_features(df_trans, df_product):
     return df_features
 
 
-# Feature column groups for reference
+# =============================================================================
+# Track 2: Causal Features
+# =============================================================================
+
+def build_exposure_features(df_trans, df_causal):
+    """Build marketing exposure features from causal_data.
+
+    Aggregates product-store-week level exposure to household level
+    by joining through transaction data.
+
+    Args:
+        df_trans: Preprocessed transaction DataFrame
+        df_causal: Causal data DataFrame with display/mailer columns
+
+    Returns:
+        DataFrame with household_key and exposure features:
+        - display_exposure_rate: proportion of transactions with display > 0
+        - display_intensity_avg: mean display level when exposed (1-9)
+        - mailer_exposure_rate: proportion of transactions with mailer != '0'
+    """
+    # Convert display to numeric (A -> 10)
+    df_causal = df_causal.copy()
+    df_causal['display_num'] = pd.to_numeric(
+        df_causal['display'].replace('A', '10'),
+        errors='coerce'
+    ).fillna(0).astype(int)
+    df_causal['mailer_exposed'] = (df_causal['mailer'] != '0').astype(int)
+
+    # Join transaction with causal data
+    df_merged = df_trans.merge(
+        df_causal[['PRODUCT_ID', 'STORE_ID', 'WEEK_NO', 'display_num', 'mailer_exposed']],
+        on=['PRODUCT_ID', 'STORE_ID', 'WEEK_NO'],
+        how='left'
+    )
+
+    # Fill missing (no causal data) with 0
+    df_merged['display_num'] = df_merged['display_num'].fillna(0)
+    df_merged['mailer_exposed'] = df_merged['mailer_exposed'].fillna(0)
+
+    # Aggregate to household level
+    df_exposure = df_merged.groupby('household_key').agg(**{
+        'n_transactions': ('BASKET_ID', 'count'),
+        'display_exposed_count': ('display_num', lambda x: (x > 0).sum()),
+        'display_sum': ('display_num', 'sum'),
+        'display_exposed_sum': ('display_num', lambda x: x[x > 0].sum()),
+        'mailer_exposed_count': ('mailer_exposed', 'sum'),
+    }).reset_index()
+
+    df_exposure = df_exposure.assign(
+        display_exposure_rate=lambda x: x['display_exposed_count'] / x['n_transactions'],
+        display_intensity_avg=lambda x: np.where(
+            x['display_exposed_count'] > 0,
+            x['display_exposed_sum'] / x['display_exposed_count'],
+            0
+        ),
+        mailer_exposure_rate=lambda x: x['mailer_exposed_count'] / x['n_transactions'],
+    )
+
+    return df_exposure[['household_key', 'display_exposure_rate',
+                        'display_intensity_avg', 'mailer_exposure_rate']]
+
+
+def build_campaign_features(df_campaign_table, df_campaign_desc):
+    """Build campaign targeting features.
+
+    Args:
+        df_campaign_table: Campaign targeting table (household_key, CAMPAIGN)
+        df_campaign_desc: Campaign descriptions (CAMPAIGN, DESCRIPTION)
+
+    Returns:
+        DataFrame with household_key and campaign features:
+        - targeted_typeA/B/C: binary indicators
+        - n_campaigns_targeted: total campaigns
+        - n_typeA_campaigns: TypeA campaign count
+    """
+    # Add campaign type
+    campaign_types = df_campaign_desc.set_index('CAMPAIGN')['DESCRIPTION'].to_dict()
+    df = df_campaign_table.assign(
+        campaign_type=lambda x: x['CAMPAIGN'].map(campaign_types)
+    )
+
+    # Count by type
+    df_counts = (
+        df.groupby(['household_key', 'campaign_type'])
+        .size()
+        .unstack(fill_value=0)
+        .reset_index()
+    )
+
+    # Ensure all type columns exist
+    for ctype in ['TypeA', 'TypeB', 'TypeC']:
+        if ctype not in df_counts.columns:
+            df_counts[ctype] = 0
+
+    df_counts = df_counts.assign(
+        targeted_typeA=lambda x: (x['TypeA'] > 0).astype(int),
+        targeted_typeB=lambda x: (x['TypeB'] > 0).astype(int),
+        targeted_typeC=lambda x: (x['TypeC'] > 0).astype(int),
+        n_campaigns_targeted=lambda x: x['TypeA'] + x['TypeB'] + x['TypeC'],
+        n_typeA_campaigns=lambda x: x['TypeA'],
+    )
+
+    return df_counts[['household_key', 'targeted_typeA', 'targeted_typeB',
+                      'targeted_typeC', 'n_campaigns_targeted', 'n_typeA_campaigns']]
+
+
+def build_outcome_features(df_trans, df_coupon_redempt, period_start=32, period_end=102):
+    """Build outcome features for campaign period.
+
+    Args:
+        df_trans: Preprocessed transaction DataFrame
+        df_coupon_redempt: Coupon redemption DataFrame
+        period_start: Campaign period start week (default: 32)
+        period_end: Campaign period end week (default: 102)
+
+    Returns:
+        DataFrame with household_key and outcome features:
+        - redemption_count: number of coupon redemptions
+        - redemption_any: binary indicator
+        - purchase_amount: total purchase in period
+        - purchase_count: number of baskets in period
+    """
+    # Filter to campaign period
+    df_period = df_trans[
+        (df_trans['WEEK_NO'] >= period_start) &
+        (df_trans['WEEK_NO'] <= period_end)
+    ]
+
+    # Purchase outcomes
+    df_purchase = df_period.groupby('household_key').agg(**{
+        'purchase_amount': ('SALES_VALUE', 'sum'),
+        'purchase_count': ('BASKET_ID', 'nunique'),
+    }).reset_index()
+
+    # Redemption outcomes
+    # Convert DAY to WEEK_NO approximation
+    df_redempt = df_coupon_redempt.copy()
+    df_redempt['WEEK_NO_approx'] = np.ceil(df_redempt['DAY'] / 7).astype(int)
+    df_redempt_period = df_redempt[
+        (df_redempt['WEEK_NO_approx'] >= period_start) &
+        (df_redempt['WEEK_NO_approx'] <= period_end)
+    ]
+
+    df_redempt_agg = (
+        df_redempt_period
+        .groupby('household_key')
+        .size()
+        .reset_index(name='redemption_count')
+    )
+
+    # Merge
+    df_outcome = (
+        df_purchase
+        .merge(df_redempt_agg, on='household_key', how='left')
+        .fillna({'redemption_count': 0})
+        .astype({'redemption_count': int})
+        .assign(redemption_any=lambda x: (x['redemption_count'] > 0).astype(int))
+    )
+
+    return df_outcome[['household_key', 'redemption_count', 'redemption_any',
+                       'purchase_amount', 'purchase_count']]
+
+
+def build_demographic_features(df_demo):
+    """Extract demographic features.
+
+    Args:
+        df_demo: Household demographic DataFrame
+
+    Returns:
+        DataFrame with household_key and demographic columns
+    """
+    demo_cols = ['household_key', 'AGE_DESC', 'MARITAL_STATUS_CODE',
+                 'INCOME_DESC', 'HOMEOWNER_DESC', 'HH_COMP_DESC',
+                 'HOUSEHOLD_SIZE_DESC', 'KID_CATEGORY_DESC']
+
+    # Select available columns
+    available_cols = [c for c in demo_cols if c in df_demo.columns]
+
+    return df_demo[available_cols].copy()
+
+
+# =============================================================================
+# Track Integration Functions
+# =============================================================================
+
+def build_track1_features(df_trans, df_product):
+    """Build all Track 1 features (33 base features).
+
+    Alias for build_all_features() for consistency.
+    """
+    return build_all_features(df_trans, df_product)
+
+
+def build_track2_features(df_trans, df_product, df_causal,
+                          df_campaign_table, df_campaign_desc,
+                          df_coupon_redempt, df_demo,
+                          pre_period_end=31, campaign_period_start=32):
+    """Build all Track 2 features (confounders + treatment + outcome).
+
+    Uses pre-treatment period (Week 1-31) for base features,
+    campaign period (Week 32-102) for outcomes.
+
+    Args:
+        df_trans: Preprocessed transaction DataFrame
+        df_product: Product DataFrame
+        df_causal: Causal data DataFrame
+        df_campaign_table: Campaign targeting table
+        df_campaign_desc: Campaign descriptions
+        df_coupon_redempt: Coupon redemption DataFrame
+        df_demo: Household demographic DataFrame
+        pre_period_end: End week for pre-treatment features (default: 31)
+        campaign_period_start: Start week for campaign period (default: 32)
+
+    Returns:
+        DataFrame with household_key and all Track 2 features
+    """
+    # Pre-treatment period transactions
+    df_trans_pre = df_trans[df_trans['WEEK_NO'] <= pre_period_end]
+
+    # Base features from pre-treatment period
+    df_base = build_all_features(df_trans_pre, df_product)
+
+    # Exposure features from pre-treatment period
+    # (measures customer's tendency to purchase display/mailer-exposed products)
+    df_causal_pre = df_causal[df_causal['WEEK_NO'] <= pre_period_end]
+    df_exposure = build_exposure_features(df_trans_pre, df_causal_pre)
+
+    # Campaign features
+    df_campaign = build_campaign_features(df_campaign_table, df_campaign_desc)
+
+    # Outcome features
+    df_outcome = build_outcome_features(df_trans, df_coupon_redempt,
+                                        period_start=campaign_period_start)
+
+    # Demographics
+    df_demo_features = build_demographic_features(df_demo)
+
+    # Merge all
+    df_track2 = (
+        df_base
+        .merge(df_exposure, on='household_key', how='left')
+        .merge(df_campaign, on='household_key', how='left')
+        .merge(df_outcome, on='household_key', how='left')
+        .merge(df_demo_features, on='household_key', how='left')
+    )
+
+    # Fill campaign NaN (not targeted)
+    campaign_cols = ['targeted_typeA', 'targeted_typeB', 'targeted_typeC',
+                     'n_campaigns_targeted', 'n_typeA_campaigns']
+    for col in campaign_cols:
+        if col in df_track2.columns:
+            df_track2[col] = df_track2[col].fillna(0).astype(int)
+
+    return df_track2
+
+
+# =============================================================================
+# Scenario 1: Campaign-specific Feature Engineering
+# =============================================================================
+
+def get_campaign_periods(df_campaign_desc, campaign_type='TypeA', post_window=4):
+    """Get campaign-specific pre-treatment and outcome periods.
+
+    Args:
+        df_campaign_desc: Campaign descriptions with START_DAY, END_DAY
+        campaign_type: Filter by campaign type (default: 'TypeA')
+        post_window: Weeks after campaign end for outcome measurement (default: 4)
+
+    Returns:
+        DataFrame with columns:
+        - CAMPAIGN, campaign_type
+        - start_week, end_week (campaign period)
+        - pre_end_week (pre-treatment ends at start_week - 1)
+        - outcome_start_week, outcome_end_week (campaign + post window, capped)
+    """
+    df = df_campaign_desc.copy()
+    df['start_week'] = np.ceil(df['START_DAY'] / 7).astype(int)
+    df['end_week'] = np.ceil(df['END_DAY'] / 7).astype(int)
+
+    if campaign_type:
+        df = df[df['DESCRIPTION'] == campaign_type].copy()
+
+    df = df.sort_values('start_week').reset_index(drop=True)
+
+    # Pre-treatment ends at campaign start - 1
+    df['pre_end_week'] = df['start_week'] - 1
+
+    # Outcome period: campaign start to end + post_window
+    # But capped by next campaign start (to avoid contamination)
+    df['next_campaign_start'] = df['start_week'].shift(-1)
+    df['outcome_start_week'] = df['start_week']
+    df['outcome_end_week'] = df.apply(
+        lambda row: min(
+            row['end_week'] + post_window,
+            row['next_campaign_start'] - 1 if pd.notna(row['next_campaign_start']) else row['end_week'] + post_window
+        ),
+        axis=1
+    ).astype(int)
+
+    df['campaign_type'] = df['DESCRIPTION']
+
+    return df[['CAMPAIGN', 'campaign_type', 'start_week', 'end_week',
+               'pre_end_week', 'outcome_start_week', 'outcome_end_week']]
+
+
+def get_campaign_periods_all_types(df_campaign_desc, post_window=4):
+    """Get campaign periods for ALL campaign types (TypeA, TypeB, TypeC).
+
+    Similar to get_campaign_periods() but includes all types.
+    Outcome period is capped by next campaign of ANY type.
+
+    Args:
+        df_campaign_desc: Campaign descriptions with START_DAY, END_DAY, DESCRIPTION
+        post_window: Weeks after campaign end for outcome measurement (default: 4)
+
+    Returns:
+        DataFrame with columns:
+        - CAMPAIGN, campaign_type
+        - start_week, end_week (campaign period)
+        - pre_end_week (pre-treatment ends at start_week - 1)
+        - outcome_start_week, outcome_end_week (campaign + post window, capped by next campaign)
+    """
+    df = df_campaign_desc.copy()
+    df['start_week'] = np.ceil(df['START_DAY'] / 7).astype(int)
+    df['end_week'] = np.ceil(df['END_DAY'] / 7).astype(int)
+
+    # Sort by start_week (all campaigns together)
+    df = df.sort_values('start_week').reset_index(drop=True)
+
+    # Pre-treatment ends at campaign start - 1
+    df['pre_end_week'] = df['start_week'] - 1
+
+    # Outcome period: capped by next campaign start (ANY type)
+    df['next_campaign_start'] = df['start_week'].shift(-1)
+    df['outcome_start_week'] = df['start_week']
+    df['outcome_end_week'] = df.apply(
+        lambda row: min(
+            row['end_week'] + post_window,
+            row['next_campaign_start'] - 1 if pd.notna(row['next_campaign_start']) else row['end_week'] + post_window
+        ),
+        axis=1
+    ).astype(int)
+
+    df['campaign_type'] = df['DESCRIPTION']
+
+    return df[['CAMPAIGN', 'campaign_type', 'start_week', 'end_week',
+               'pre_end_week', 'outcome_start_week', 'outcome_end_week']]
+
+
+def build_scenario1_features(df_trans, df_product, df_causal,
+                              df_campaign_table, df_campaign_desc,
+                              df_coupon_redempt, df_demo,
+                              post_window=4,
+                              first_campaign_only=True):
+    """Build Scenario 1 features with campaign-specific periods.
+
+    Args:
+        df_trans: Preprocessed transaction DataFrame
+        df_product: Product DataFrame
+        df_causal: Causal data DataFrame
+        df_campaign_table: Campaign targeting table
+        df_campaign_desc: Campaign descriptions
+        df_coupon_redempt: Coupon redemption DataFrame
+        df_demo: Household demographic DataFrame
+        post_window: Weeks after campaign end for outcome (default: 4)
+        first_campaign_only: If True (default), use first TypeA campaign only
+            for clean causal identification. If False, use all campaigns
+            (legacy behavior, may have pre-treatment contamination).
+
+    Returns:
+        DataFrame with columns:
+        - household_key, CAMPAIGN, campaign_type
+        - targeted (treatment indicator)
+        - pre_end_week, outcome_start_week, outcome_end_week (period info)
+        - All base features (computed from pre-treatment period)
+        - Exposure features (from pre-treatment period)
+        - Outcome features (from campaign + post period)
+        - Demographic features
+
+    Note:
+        When first_campaign_only=True (default):
+        - Treatment: Each customer's first TypeA campaign (1,513 customers)
+        - Control: Never-targeted customers, assigned to first active campaign (987 customers)
+        - Total: 2,500 observations (1 per customer)
+        - No pre-treatment contamination from previous campaigns
+    """
+    if first_campaign_only:
+        from projects.segmentation_dunnhumby.src.cohorts import build_scenario1_first_campaign_cohort
+        cohort = build_scenario1_first_campaign_cohort(
+            df_trans, df_campaign_table, df_campaign_desc, post_window
+        )
+    else:
+        from projects.segmentation_dunnhumby.src.cohorts import build_scenario1_cohort
+        # Get campaign periods
+        campaign_periods = get_campaign_periods(df_campaign_desc, 'TypeA', post_window)
+        # Build base cohort (customer × campaign with treatment indicator)
+        cohort = build_scenario1_cohort(df_trans, df_campaign_table, df_campaign_desc)
+        # Add period information
+        cohort = cohort.merge(
+            campaign_periods[['CAMPAIGN', 'pre_end_week', 'outcome_start_week', 'outcome_end_week']],
+            on='CAMPAIGN',
+            how='left'
+        )
+
+    # Get unique customers and campaigns
+    customers = cohort['household_key'].unique()
+    unique_campaigns = cohort['CAMPAIGN'].unique()
+
+    # Demographics (time-invariant, compute once)
+    df_demo_features = build_demographic_features(df_demo)
+
+    # Get campaign periods for feature computation
+    campaign_periods = get_campaign_periods(df_campaign_desc, 'TypeA', post_window)
+    campaign_periods = campaign_periods[campaign_periods['CAMPAIGN'].isin(unique_campaigns)]
+
+    # Pre-compute features for each campaign's pre-treatment period
+    campaign_features = {}
+
+    for _, camp_row in campaign_periods.iterrows():
+        campaign_id = camp_row['CAMPAIGN']
+        pre_end = camp_row['pre_end_week']
+        outcome_start = camp_row['outcome_start_week']
+        outcome_end = camp_row['outcome_end_week']
+
+        # Get customers assigned to this campaign
+        campaign_customers = cohort[cohort['CAMPAIGN'] == campaign_id]['household_key'].values
+
+        # Pre-treatment data
+        df_trans_pre = df_trans[
+            (df_trans['WEEK_NO'] <= pre_end) &
+            (df_trans['household_key'].isin(campaign_customers))
+        ]
+        df_causal_pre = df_causal[df_causal['WEEK_NO'] <= pre_end]
+
+        # Base features from pre-treatment
+        df_base = build_all_features(df_trans_pre, df_product)
+
+        # Exposure features from pre-treatment
+        df_exposure = build_exposure_features(df_trans_pre, df_causal_pre)
+
+        # Outcome features from campaign + post period
+        df_outcome = build_outcome_features(
+            df_trans, df_coupon_redempt,
+            period_start=outcome_start,
+            period_end=outcome_end
+        )
+
+        # Merge features for this campaign
+        df_camp_features = (
+            df_base
+            .merge(df_exposure, on='household_key', how='left')
+            .merge(df_outcome, on='household_key', how='left')
+        )
+        df_camp_features['CAMPAIGN'] = campaign_id
+
+        campaign_features[campaign_id] = df_camp_features
+
+    # Combine all campaign features
+    df_all_features = pd.concat(campaign_features.values(), ignore_index=True)
+
+    # Merge with cohort (to get treatment indicator and period info)
+    result = cohort.merge(
+        df_all_features,
+        on=['household_key', 'CAMPAIGN'],
+        how='left'
+    )
+
+    # Add demographics
+    result = result.merge(df_demo_features, on='household_key', how='left')
+
+    # Fill NaN for outcome features
+    fill_cols = ['redemption_count', 'redemption_any', 'purchase_amount', 'purchase_count']
+    for col in fill_cols:
+        if col in result.columns:
+            result[col] = result[col].fillna(0)
+
+    return result
+
+
+# =============================================================================
+# Scenario 2: First Campaign Overall with Type as Attribute
+# =============================================================================
+
+def build_scenario2_features(df_trans, df_product, df_causal,
+                              df_campaign_table, df_campaign_desc,
+                              df_coupon_redempt, df_demo,
+                              post_window=4):
+    """Build Scenario 2 features with campaign-specific periods (all types).
+
+    For clean causal identification with campaign type comparison:
+    - Each customer appears exactly once using their first campaign (any type)
+    - campaign_type is recorded as attribute for HTE analysis
+    - Pre-treatment features computed from period before first campaign
+    - Outcomes computed from campaign + post window period
+
+    Args:
+        df_trans: Preprocessed transaction DataFrame
+        df_product: Product DataFrame
+        df_causal: Causal data DataFrame
+        df_campaign_table: Campaign targeting table
+        df_campaign_desc: Campaign descriptions
+        df_coupon_redempt: Coupon redemption DataFrame
+        df_demo: Household demographic DataFrame
+        post_window: Weeks after campaign end for outcome (default: 4)
+
+    Returns:
+        DataFrame with columns:
+        - household_key, CAMPAIGN, campaign_type (TypeA/B/C/Control)
+        - targeted (treatment indicator)
+        - pre_end_week, outcome_start_week, outcome_end_week (period info)
+        - All base features (computed from pre-treatment period)
+        - Exposure features (from pre-treatment period)
+        - Outcome features (from campaign + post period)
+        - Demographic features
+    """
+    from projects.segmentation_dunnhumby.src.cohorts import build_scenario2_first_campaign_cohort
+
+    # 1. Build cohort
+    cohort = build_scenario2_first_campaign_cohort(
+        df_trans, df_campaign_table, df_campaign_desc, post_window
+    )
+
+    # 2. Get campaign periods
+    campaign_periods = get_campaign_periods_all_types(df_campaign_desc, post_window)
+    unique_campaigns = cohort['CAMPAIGN'].unique()
+    campaign_periods = campaign_periods[campaign_periods['CAMPAIGN'].isin(unique_campaigns)]
+
+    # 3. Demographics (time-invariant, compute once)
+    df_demo_features = build_demographic_features(df_demo)
+
+    # 4. Pre-compute features for each campaign's pre-treatment period
+    campaign_features = {}
+
+    for _, camp_row in campaign_periods.iterrows():
+        campaign_id = camp_row['CAMPAIGN']
+        pre_end = camp_row['pre_end_week']
+        outcome_start = camp_row['outcome_start_week']
+        outcome_end = camp_row['outcome_end_week']
+
+        # Get customers assigned to this campaign
+        campaign_customers = cohort[cohort['CAMPAIGN'] == campaign_id]['household_key'].values
+
+        if len(campaign_customers) == 0:
+            continue
+
+        # Pre-treatment data
+        df_trans_pre = df_trans[
+            (df_trans['WEEK_NO'] <= pre_end) &
+            (df_trans['household_key'].isin(campaign_customers))
+        ]
+        df_causal_pre = df_causal[df_causal['WEEK_NO'] <= pre_end]
+
+        # Base features from pre-treatment
+        df_base = build_all_features(df_trans_pre, df_product)
+
+        # Exposure features from pre-treatment
+        df_exposure = build_exposure_features(df_trans_pre, df_causal_pre)
+
+        # Outcome features from campaign + post period
+        df_outcome = build_outcome_features(
+            df_trans, df_coupon_redempt,
+            period_start=outcome_start,
+            period_end=outcome_end
+        )
+
+        # Merge features for this campaign
+        df_camp_features = (
+            df_base
+            .merge(df_exposure, on='household_key', how='left')
+            .merge(df_outcome, on='household_key', how='left')
+        )
+        df_camp_features['CAMPAIGN'] = campaign_id
+
+        campaign_features[campaign_id] = df_camp_features
+
+    # 5. Combine all campaign features
+    df_all_features = pd.concat(campaign_features.values(), ignore_index=True)
+
+    # 6. Merge with cohort (to get treatment indicator and period info)
+    result = cohort.merge(
+        df_all_features,
+        on=['household_key', 'CAMPAIGN'],
+        how='left'
+    )
+
+    # 7. Add demographics
+    result = result.merge(df_demo_features, on='household_key', how='left')
+
+    # 8. Fill NaN for outcome features
+    fill_cols = ['redemption_count', 'redemption_any', 'purchase_amount', 'purchase_count']
+    for col in fill_cols:
+        if col in result.columns:
+            result[col] = result[col].fillna(0)
+
+    return result
+
+
+# =============================================================================
+# Feature Column Groups
+# =============================================================================
+
 FEATURE_COLS = {
+    # Track 1 base features
     'recency': [
         'recency', 'recency_weeks', 'active_last_4w', 'active_last_12w',
         'days_between_purchases_avg', 'days_between_purchases_std',
@@ -265,6 +891,48 @@ FEATURE_COLS = {
         'share_health_beauty', 'share_alcohol', 'share_other',
     ],
     'time': ['week_coverage'],
+
+    # Track 2 features
+    'exposure': [
+        'display_exposure_rate', 'display_intensity_avg', 'mailer_exposure_rate',
+    ],
+    'campaign': [
+        'targeted_typeA', 'targeted_typeB', 'targeted_typeC',
+        'n_campaigns_targeted', 'n_typeA_campaigns',
+    ],
+    'outcome': [
+        'redemption_count', 'redemption_any', 'purchase_amount', 'purchase_count',
+    ],
+    'demographic': [
+        'AGE_DESC', 'MARITAL_STATUS_CODE', 'INCOME_DESC', 'HOMEOWNER_DESC',
+        'HH_COMP_DESC', 'HOUSEHOLD_SIZE_DESC', 'KID_CATEGORY_DESC',
+    ],
 }
 
-ALL_FEATURE_COLS = [col for cols in FEATURE_COLS.values() for col in cols]
+# Track 1 feature list (33 features)
+TRACK1_FEATURE_COLS = [col for group in ['recency', 'frequency', 'monetary',
+                                          'behavioral', 'category', 'time']
+                       for col in FEATURE_COLS[group]]
+
+# Track 1 reduced features (19 features) - removes redundant/highly correlated features
+FEATURE_COLS_REDUCED = {
+    'recency': ['recency', 'days_between_purchases_avg'],  # 2 (removed: recency_weeks, active_4w/12w, days_std)
+    'frequency': ['frequency', 'frequency_per_week', 'purchase_regularity'],  # 3 (removed: freq_per_month, transaction_count, weeks_with_purchase)
+    'monetary': ['monetary_sales', 'monetary_avg_basket_sales',
+                 'monetary_std', 'coupon_savings_ratio'],  # 4 (removed: actual variants, per_week)
+    'behavioral': ['discount_usage_pct', 'private_label_ratio',
+                   'n_departments', 'n_products', 'avg_items_per_basket'],  # 5 (removed: discount_rate, avg_products)
+    'category': ['share_grocery', 'share_fresh', 'share_bakery',
+                 'share_health_beauty', 'share_alcohol'],  # 5 (removed: share_other - sum to 1)
+}
+TRACK1_REDUCED_COLS = [col for group in ['recency', 'frequency', 'monetary',
+                                          'behavioral', 'category']
+                       for col in FEATURE_COLS_REDUCED[group]]
+
+# All base features (alias for backward compatibility)
+ALL_FEATURE_COLS = TRACK1_FEATURE_COLS
+
+# Value/Need separation for Track 1.2
+VALUE_FEATURES = (FEATURE_COLS['recency'] + FEATURE_COLS['frequency'] +
+                  FEATURE_COLS['monetary'] + FEATURE_COLS['time'])
+NEED_FEATURES = FEATURE_COLS['behavioral'] + FEATURE_COLS['category']
