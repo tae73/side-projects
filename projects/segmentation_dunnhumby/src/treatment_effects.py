@@ -1215,6 +1215,7 @@ def placebo_treatment_test(
     X: np.ndarray,
     actual_cate: np.ndarray,
     model_factory,
+    X_predict: Optional[np.ndarray] = None,
     n_permutations: int = 1,
     threshold: float = 0.5,
     seed: int = 42
@@ -1228,10 +1229,11 @@ def placebo_treatment_test(
     Args:
         Y: Outcome variable (n_samples,)
         T: Treatment indicator 0/1 (n_samples,)
-        X: Covariate matrix (n_samples, n_features)
-        actual_cate: CATE predictions from the actual model (n_samples,)
+        X: Covariate matrix for training (n_samples, n_features)
+        actual_cate: CATE predictions from the actual model
         model_factory: Callable returning a fresh CATE model instance.
             The model must have .fit(Y, T, X=X) and .effect(X) methods.
+        X_predict: Covariate matrix for prediction (default: X)
         n_permutations: Number of placebo runs (default: 1).
         threshold: Pass if |placebo_mean| < threshold * |actual_mean| (default: 0.5)
         seed: Random seed for reproducibility
@@ -1240,6 +1242,9 @@ def placebo_treatment_test(
         PlaceboTestResult with pass/fail and diagnostic metrics
     """
     np.random.seed(seed)
+
+    if X_predict is None:
+        X_predict = X
 
     treatment_rate = T.mean()
     placebo_cates = []
@@ -1251,7 +1256,7 @@ def placebo_treatment_test(
         # Fit model on placebo treatment
         model = model_factory()
         model.fit(Y, T_placebo, X=X)
-        cate_placebo = model.effect(X).flatten()
+        cate_placebo = model.effect(X_predict).flatten()
         placebo_cates.append(cate_placebo.mean())
 
     placebo_mean = np.mean(placebo_cates)
@@ -1278,6 +1283,7 @@ def subset_data_test(
     X: np.ndarray,
     full_cate: np.ndarray,
     model_factory,
+    X_predict: Optional[np.ndarray] = None,
     subset_fraction: float = 0.5,
     threshold: float = 0.7,
     seed: int = 42
@@ -1290,9 +1296,10 @@ def subset_data_test(
     Args:
         Y: Outcome variable (n_samples,)
         T: Treatment indicator 0/1 (n_samples,)
-        X: Covariate matrix (n_samples, n_features)
-        full_cate: CATE predictions from model trained on full data (n_samples,)
+        X: Covariate matrix for training (n_samples, n_features)
+        full_cate: CATE predictions from model trained on full data
         model_factory: Callable returning a fresh CATE model instance.
+        X_predict: Covariate matrix for prediction (default: X)
         subset_fraction: Fraction of data to use for subset (default: 0.5)
         threshold: Pass if correlation > threshold (default: 0.7)
         seed: Random seed for reproducibility
@@ -1301,6 +1308,10 @@ def subset_data_test(
         SubsetTestResult with correlation and pass/fail status
     """
     np.random.seed(seed)
+
+    if X_predict is None:
+        X_predict = X
+
     n = len(Y)
     n_subset = int(n * subset_fraction)
 
@@ -1311,8 +1322,8 @@ def subset_data_test(
     model = model_factory()
     model.fit(Y[subset_idx], T[subset_idx], X=X[subset_idx])
 
-    # Predict on FULL data (for comparison with full_cate)
-    subset_cate = model.effect(X).flatten()
+    # Predict on X_predict (for comparison with full_cate)
+    subset_cate = model.effect(X_predict).flatten()
 
     # Correlation between full and subset CATE
     correlation = np.corrcoef(full_cate, subset_cate)[0, 1]
@@ -1339,6 +1350,7 @@ def run_refutation_tests(
     X: np.ndarray,
     actual_cate: np.ndarray,
     model_factory,
+    X_predict: Optional[np.ndarray] = None,
     placebo_threshold: float = 0.5,
     subset_threshold: float = 0.7,
     subset_fraction: float = 0.5,
@@ -1349,9 +1361,10 @@ def run_refutation_tests(
     Args:
         Y: Outcome variable
         T: Treatment indicator
-        X: Covariate matrix
-        actual_cate: CATE from actual model
+        X: Covariate matrix for training
+        actual_cate: CATE from actual model (on X_predict)
         model_factory: Factory function returning fresh model instances
+        X_predict: Covariate matrix for prediction (default: X)
         placebo_threshold: Pass if placebo_ratio < threshold
         subset_threshold: Pass if correlation > threshold
         subset_fraction: Fraction for subset test
@@ -1362,11 +1375,13 @@ def run_refutation_tests(
     """
     placebo_result = placebo_treatment_test(
         Y, T, X, actual_cate, model_factory,
+        X_predict=X_predict,
         threshold=placebo_threshold, seed=seed
     )
 
     subset_result = subset_data_test(
         Y, T, X, actual_cate, model_factory,
+        X_predict=X_predict,
         subset_fraction=subset_fraction,
         threshold=subset_threshold, seed=seed + 1
     )
