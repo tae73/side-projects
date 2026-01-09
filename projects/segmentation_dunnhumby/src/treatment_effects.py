@@ -1172,3 +1172,207 @@ def blp_test(
         'tau_1_pvalue': model.pvalues[2],
         'hte_exists': model.pvalues[2] < 0.05
     }
+
+
+# =============================================================================
+# Refutation Tests
+# =============================================================================
+
+class PlaceboTestResult(NamedTuple):
+    """Placebo treatment test result."""
+    actual_cate_mean: float
+    placebo_cate_mean: float
+    placebo_cate_std: float
+    ratio: float  # abs(placebo_mean) / abs(actual_mean)
+    passed: bool
+    threshold: float
+
+
+class SubsetTestResult(NamedTuple):
+    """Subset data test result."""
+    correlation: float
+    full_cate_mean: float
+    subset_cate_mean: float
+    full_cate_std: float
+    subset_cate_std: float
+    passed: bool
+    threshold: float
+    subset_fraction: float
+    n_full: int
+    n_subset: int
+
+
+class RefutationTestResults(NamedTuple):
+    """Combined refutation test results."""
+    placebo: PlaceboTestResult
+    subset: SubsetTestResult
+    all_passed: bool
+
+
+def placebo_treatment_test(
+    Y: np.ndarray,
+    T: np.ndarray,
+    X: np.ndarray,
+    actual_cate: np.ndarray,
+    model_factory,
+    n_permutations: int = 1,
+    threshold: float = 0.5,
+    seed: int = 42
+) -> PlaceboTestResult:
+    """Placebo treatment test for CATE model validation.
+
+    Tests whether randomly assigned treatment produces near-zero CATE.
+    If the model correctly identifies treatment effects (not spurious
+    correlations), random treatment should yield CATE close to 0.
+
+    Args:
+        Y: Outcome variable (n_samples,)
+        T: Treatment indicator 0/1 (n_samples,)
+        X: Covariate matrix (n_samples, n_features)
+        actual_cate: CATE predictions from the actual model (n_samples,)
+        model_factory: Callable returning a fresh CATE model instance.
+            The model must have .fit(Y, T, X=X) and .effect(X) methods.
+        n_permutations: Number of placebo runs (default: 1).
+        threshold: Pass if |placebo_mean| < threshold * |actual_mean| (default: 0.5)
+        seed: Random seed for reproducibility
+
+    Returns:
+        PlaceboTestResult with pass/fail and diagnostic metrics
+    """
+    np.random.seed(seed)
+
+    treatment_rate = T.mean()
+    placebo_cates = []
+
+    for i in range(n_permutations):
+        # Generate random (placebo) treatment
+        T_placebo = np.random.binomial(1, treatment_rate, len(T))
+
+        # Fit model on placebo treatment
+        model = model_factory()
+        model.fit(Y, T_placebo, X=X)
+        cate_placebo = model.effect(X).flatten()
+        placebo_cates.append(cate_placebo.mean())
+
+    placebo_mean = np.mean(placebo_cates)
+    placebo_std = np.std(placebo_cates) if n_permutations > 1 else np.nan
+    actual_mean = actual_cate.mean()
+
+    # Pass criterion: placebo effect should be much smaller than actual
+    ratio = abs(placebo_mean) / abs(actual_mean) if actual_mean != 0 else np.inf
+    passed = ratio < threshold
+
+    return PlaceboTestResult(
+        actual_cate_mean=actual_mean,
+        placebo_cate_mean=placebo_mean,
+        placebo_cate_std=placebo_std,
+        ratio=ratio,
+        passed=passed,
+        threshold=threshold
+    )
+
+
+def subset_data_test(
+    Y: np.ndarray,
+    T: np.ndarray,
+    X: np.ndarray,
+    full_cate: np.ndarray,
+    model_factory,
+    subset_fraction: float = 0.5,
+    threshold: float = 0.7,
+    seed: int = 42
+) -> SubsetTestResult:
+    """Subset data test for CATE model stability.
+
+    Tests whether training on a random subset produces CATE estimates
+    correlated with the full model. This validates model stability.
+
+    Args:
+        Y: Outcome variable (n_samples,)
+        T: Treatment indicator 0/1 (n_samples,)
+        X: Covariate matrix (n_samples, n_features)
+        full_cate: CATE predictions from model trained on full data (n_samples,)
+        model_factory: Callable returning a fresh CATE model instance.
+        subset_fraction: Fraction of data to use for subset (default: 0.5)
+        threshold: Pass if correlation > threshold (default: 0.7)
+        seed: Random seed for reproducibility
+
+    Returns:
+        SubsetTestResult with correlation and pass/fail status
+    """
+    np.random.seed(seed)
+    n = len(Y)
+    n_subset = int(n * subset_fraction)
+
+    # Random subset indices
+    subset_idx = np.random.choice(n, n_subset, replace=False)
+
+    # Fit on subset
+    model = model_factory()
+    model.fit(Y[subset_idx], T[subset_idx], X=X[subset_idx])
+
+    # Predict on FULL data (for comparison with full_cate)
+    subset_cate = model.effect(X).flatten()
+
+    # Correlation between full and subset CATE
+    correlation = np.corrcoef(full_cate, subset_cate)[0, 1]
+
+    passed = correlation > threshold
+
+    return SubsetTestResult(
+        correlation=correlation,
+        full_cate_mean=full_cate.mean(),
+        subset_cate_mean=subset_cate.mean(),
+        full_cate_std=full_cate.std(),
+        subset_cate_std=subset_cate.std(),
+        passed=passed,
+        threshold=threshold,
+        subset_fraction=subset_fraction,
+        n_full=n,
+        n_subset=n_subset
+    )
+
+
+def run_refutation_tests(
+    Y: np.ndarray,
+    T: np.ndarray,
+    X: np.ndarray,
+    actual_cate: np.ndarray,
+    model_factory,
+    placebo_threshold: float = 0.5,
+    subset_threshold: float = 0.7,
+    subset_fraction: float = 0.5,
+    seed: int = 42
+) -> RefutationTestResults:
+    """Run all refutation tests for CATE model validation.
+
+    Args:
+        Y: Outcome variable
+        T: Treatment indicator
+        X: Covariate matrix
+        actual_cate: CATE from actual model
+        model_factory: Factory function returning fresh model instances
+        placebo_threshold: Pass if placebo_ratio < threshold
+        subset_threshold: Pass if correlation > threshold
+        subset_fraction: Fraction for subset test
+        seed: Random seed
+
+    Returns:
+        RefutationTestResults with all test results
+    """
+    placebo_result = placebo_treatment_test(
+        Y, T, X, actual_cate, model_factory,
+        threshold=placebo_threshold, seed=seed
+    )
+
+    subset_result = subset_data_test(
+        Y, T, X, actual_cate, model_factory,
+        subset_fraction=subset_fraction,
+        threshold=subset_threshold, seed=seed + 1
+    )
+
+    return RefutationTestResults(
+        placebo=placebo_result,
+        subset=subset_result,
+        all_passed=placebo_result.passed and subset_result.passed
+    )

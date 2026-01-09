@@ -1089,3 +1089,94 @@ def plot_roi_curves(
 
     plt.tight_layout()
     return fig, (axes[0], axes[1])
+
+
+# =============================================================================
+# Refutation Test Plots
+# =============================================================================
+
+def plot_placebo_comparison(
+    actual_cate: np.ndarray,
+    placebo_cate: np.ndarray,
+    title: str = "CATE Distribution: Actual vs Placebo",
+    ax: Optional[plt.Axes] = None,
+    config: PlotConfig = DEFAULT_CONFIG
+) -> plt.Axes:
+    """Side-by-side CATE distribution for actual vs placebo treatment.
+
+    Args:
+        actual_cate: CATE from real treatment
+        placebo_cate: CATE from placebo (random) treatment
+        title: Plot title
+        ax: Matplotlib axes
+        config: PlotConfig instance
+
+    Returns:
+        Matplotlib axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=config.figsize, dpi=config.dpi)
+
+    # KDE plots
+    sns.kdeplot(actual_cate, ax=ax, label='Actual Treatment',
+                color='tab:blue', fill=True, alpha=0.3)
+    sns.kdeplot(placebo_cate, ax=ax, label='Placebo Treatment',
+                color='tab:red', fill=True, alpha=0.3)
+
+    # Reference lines
+    ax.axvline(x=0, color='gray', linestyle='--', linewidth=1, label='Zero Effect')
+    ax.axvline(x=actual_cate.mean(), color='tab:blue', linestyle=':',
+               linewidth=2, label=f'Actual Mean: {actual_cate.mean():.2f}')
+    ax.axvline(x=placebo_cate.mean(), color='tab:red', linestyle=':',
+               linewidth=2, label=f'Placebo Mean: {placebo_cate.mean():.2f}')
+
+    ax.set_xlabel('CATE')
+    ax.set_ylabel('Density')
+    ax.set_title(title)
+    ax.legend(loc='upper right')
+
+    return ax
+
+
+def plot_subset_correlation(
+    full_cate: np.ndarray,
+    subset_cate: np.ndarray,
+    correlation: float,
+    title: str = "CATE Correlation: Full vs Subset Model",
+    ax: Optional[plt.Axes] = None,
+    config: PlotConfig = DEFAULT_CONFIG
+) -> plt.Axes:
+    """Scatter plot of full vs subset model CATE predictions.
+
+    Args:
+        full_cate: CATE from full model
+        subset_cate: CATE from subset model
+        correlation: Pearson correlation coefficient
+        title: Plot title
+        ax: Matplotlib axes
+        config: PlotConfig instance
+
+    Returns:
+        Matplotlib axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=config.figsize, dpi=config.dpi)
+
+    ax.scatter(full_cate, subset_cate, alpha=0.5, s=30)
+
+    # Identity line
+    lims = [min(full_cate.min(), subset_cate.min()),
+            max(full_cate.max(), subset_cate.max())]
+    ax.plot(lims, lims, 'r--', linewidth=1, label='Identity')
+
+    # Regression line
+    z = np.polyfit(full_cate, subset_cate, 1)
+    p = np.poly1d(z)
+    ax.plot(lims, p(lims), 'b-', linewidth=1, label='Regression')
+
+    ax.set_xlabel('Full Model CATE')
+    ax.set_ylabel('Subset Model CATE')
+    ax.set_title(f'{title}\nCorrelation: r = {correlation:.3f}')
+    ax.legend()
+
+    return ax

@@ -70,10 +70,17 @@ from .treatment_effects import (
     run_covariate_experiment,
     # BLP Test
     blp_test,
+    # Refutation Tests
+    placebo_treatment_test,
+    subset_data_test,
+    run_refutation_tests,
     # Types
     ATEResult,
     CATEBounds,
     PositivityDiagnostics,
+    PlaceboTestResult,
+    SubsetTestResult,
+    RefutationTestResults,
 )
 
 from .plots import (
@@ -108,6 +115,9 @@ from .plots import (
     plot_positivity_summary,
     # ROI Plots
     plot_roi_curves,
+    # Refutation Test Plots
+    plot_placebo_comparison,
+    plot_subset_correlation,
 )
 
 from .ray_utils import (
