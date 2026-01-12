@@ -1180,3 +1180,439 @@ def plot_subset_correlation(
     ax.legend()
 
     return ax
+
+
+# =============================================================================
+# Policy Learning Plots
+# =============================================================================
+
+def plot_policy_comparison(
+    results_df: pd.DataFrame,
+    metric: str = 'expected_profit',
+    title: str = "Policy Comparison",
+    ax: Optional[plt.Axes] = None,
+    config: PlotConfig = DEFAULT_CONFIG
+) -> plt.Axes:
+    """Bar chart comparing policies by specified metric.
+
+    Args:
+        results_df: DataFrame with policy comparison results
+        metric: Column name to plot (e.g., 'expected_profit', 'value_dr')
+        title: Plot title
+        ax: Matplotlib axes
+        config: PlotConfig instance
+
+    Returns:
+        Matplotlib axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=config.figsize, dpi=config.dpi)
+
+    # Sort by metric
+    df_sorted = results_df.sort_values(metric, ascending=True)
+
+    # Color based on positive/negative
+    colors = ['tab:green' if v > 0 else 'tab:red' for v in df_sorted[metric]]
+
+    ax.barh(df_sorted['name'], df_sorted[metric], color=colors, alpha=0.7)
+    ax.axvline(0, color='black', linestyle='--', linewidth=1)
+
+    ax.set_xlabel(metric.replace('_', ' ').title())
+    ax.set_ylabel('Policy')
+    ax.set_title(title)
+
+    # Add value labels
+    for i, (name, val) in enumerate(zip(df_sorted['name'], df_sorted[metric])):
+        offset = 5 if val >= 0 else -5
+        ha = 'left' if val >= 0 else 'right'
+        ax.annotate(f'${val:,.0f}' if 'profit' in metric.lower() else f'{val:.2f}',
+                   xy=(val, i), xytext=(offset, 0),
+                   textcoords='offset points', ha=ha, va='center',
+                   fontsize=config.tick_fontsize)
+
+    return ax
+
+
+def plot_policy_comparison_dual(
+    results_df: pd.DataFrame,
+    title: str = "Policy Comparison",
+    figsize: Tuple[int, int] = (14, 6),
+    config: PlotConfig = DEFAULT_CONFIG
+) -> plt.Figure:
+    """Two-panel policy comparison: value and profit.
+
+    Args:
+        results_df: DataFrame with policy comparison results
+        title: Plot title
+        figsize: Figure size
+        config: PlotConfig instance
+
+    Returns:
+        Matplotlib figure
+    """
+    fig, axes = plt.subplots(1, 2, figsize=figsize, dpi=config.dpi)
+
+    # Left: DR Policy Value
+    df_sorted = results_df.sort_values('value_dr', ascending=True)
+    colors = ['tab:blue' for _ in df_sorted['value_dr']]
+    axes[0].barh(df_sorted['name'], df_sorted['value_dr'], color=colors, alpha=0.7)
+    axes[0].set_xlabel('Policy Value (DR)')
+    axes[0].set_ylabel('Policy')
+    axes[0].set_title('Policy Value Comparison')
+
+    # Right: Expected Profit
+    df_sorted = results_df.sort_values('expected_profit', ascending=True)
+    colors = ['tab:green' if v > 0 else 'tab:red' for v in df_sorted['expected_profit']]
+    axes[1].barh(df_sorted['name'], df_sorted['expected_profit'], color=colors, alpha=0.7)
+    axes[1].axvline(0, color='black', linestyle='--', linewidth=1)
+    axes[1].set_xlabel('Expected Profit ($)')
+    axes[1].set_ylabel('')
+    axes[1].set_title('Expected Profit Comparison')
+
+    fig.suptitle(title, fontsize=config.title_fontsize, y=1.02)
+    fig.tight_layout()
+
+    return fig
+
+
+def plot_policy_regions(
+    X: np.ndarray,
+    policy: np.ndarray,
+    feature_names: List[str],
+    top_k_features: int = 2,
+    importances: Optional[np.ndarray] = None,
+    title: str = "Policy Decision Regions",
+    ax: Optional[plt.Axes] = None,
+    config: PlotConfig = DEFAULT_CONFIG
+) -> plt.Axes:
+    """2D visualization of policy decision regions.
+
+    Args:
+        X: Covariate matrix
+        policy: Policy assignments 0/1
+        feature_names: Feature names
+        top_k_features: Number of top features to plot
+        importances: Feature importances (to select top features)
+        title: Plot title
+        ax: Matplotlib axes
+        config: PlotConfig instance
+
+    Returns:
+        Matplotlib axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=config.figsize, dpi=config.dpi)
+
+    # Select top features
+    if importances is not None:
+        top_idx = np.argsort(importances)[-top_k_features:]
+    else:
+        top_idx = [0, 1]  # Default to first two
+
+    x_idx, y_idx = top_idx[-1], top_idx[-2]
+    x_name = feature_names[x_idx]
+    y_name = feature_names[y_idx]
+
+    # Scatter plot
+    scatter = ax.scatter(
+        X[:, x_idx], X[:, y_idx],
+        c=policy, cmap='RdYlGn',
+        alpha=0.6, s=50,
+        edgecolors='gray', linewidths=0.5
+    )
+
+    ax.set_xlabel(x_name)
+    ax.set_ylabel(y_name)
+    ax.set_title(title)
+
+    # Colorbar
+    cbar = plt.colorbar(scatter, ax=ax)
+    cbar.set_label('Policy (0=Control, 1=Target)')
+    cbar.set_ticks([0, 1])
+    cbar.set_ticklabels(['Control', 'Target'])
+
+    return ax
+
+
+def plot_cate_confidence_scatter(
+    cate: np.ndarray,
+    cate_lower: np.ndarray,
+    cate_upper: np.ndarray,
+    breakeven: float,
+    title: str = "CATE vs Uncertainty",
+    ax: Optional[plt.Axes] = None,
+    config: PlotConfig = DEFAULT_CONFIG
+) -> plt.Axes:
+    """Scatter plot of CATE point estimate vs bounds width.
+
+    Args:
+        cate: CATE point estimates
+        cate_lower: Lower bounds
+        cate_upper: Upper bounds
+        breakeven: Breakeven CATE threshold
+        title: Plot title
+        ax: Matplotlib axes
+        config: PlotConfig instance
+
+    Returns:
+        Matplotlib axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=config.figsize, dpi=config.dpi)
+
+    bounds_width = cate_upper - cate_lower
+
+    # Color by confident positive / negative / uncertain
+    colors = []
+    for i in range(len(cate)):
+        if cate_lower[i] > breakeven:
+            colors.append('tab:green')  # Confident positive
+        elif cate_upper[i] < 0:
+            colors.append('tab:red')  # Confident negative
+        else:
+            colors.append('tab:gray')  # Uncertain
+
+    ax.scatter(cate, bounds_width, c=colors, alpha=0.6, s=50)
+
+    # Reference lines
+    ax.axvline(breakeven, color='orange', linestyle='--', linewidth=2,
+               label=f'Breakeven: ${breakeven:.2f}')
+    ax.axvline(0, color='gray', linestyle=':', linewidth=1, label='Zero')
+
+    ax.set_xlabel('CATE Point Estimate')
+    ax.set_ylabel('Bounds Width (Uncertainty)')
+    ax.set_title(title)
+    ax.legend()
+
+    # Add legend for colors
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='tab:green', alpha=0.6, label='Confident Positive'),
+        Patch(facecolor='tab:red', alpha=0.6, label='Confident Negative'),
+        Patch(facecolor='tab:gray', alpha=0.6, label='Uncertain'),
+    ]
+    ax.legend(handles=legend_elements, loc='upper right')
+
+    return ax
+
+
+def plot_segment_policy_heatmap(
+    segment_policy_df: pd.DataFrame,
+    segment_col: str = 'segment_name',
+    policy_cols: Optional[List[str]] = None,
+    title: str = "Targeting Rate by Segment and Policy",
+    ax: Optional[plt.Axes] = None,
+    config: PlotConfig = DEFAULT_CONFIG
+) -> plt.Axes:
+    """Heatmap of targeting rates by segment and policy.
+
+    Args:
+        segment_policy_df: DataFrame with segment and policy columns
+        segment_col: Column name for segments
+        policy_cols: List of policy column names
+        title: Plot title
+        ax: Matplotlib axes
+        config: PlotConfig instance
+
+    Returns:
+        Matplotlib axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=config.figsize, dpi=config.dpi)
+
+    if policy_cols is None:
+        policy_cols = [c for c in segment_policy_df.columns if c != segment_col]
+
+    # Pivot data if needed
+    if segment_col in segment_policy_df.columns:
+        plot_df = segment_policy_df.set_index(segment_col)[policy_cols]
+    else:
+        plot_df = segment_policy_df[policy_cols]
+
+    sns.heatmap(plot_df, annot=True, fmt='.1%', cmap='YlGn',
+                ax=ax, cbar_kws={'label': 'Targeting Rate'})
+
+    ax.set_xlabel('Policy')
+    ax.set_ylabel('Segment')
+    ax.set_title(title)
+
+    return ax
+
+
+def plot_sensitivity_heatmap(
+    sensitivity_df: pd.DataFrame,
+    x_col: str = 'cost',
+    y_col: str = 'margin',
+    value_col: str = 'profit',
+    title: str = "Sensitivity Analysis: Profit by Cost and Margin",
+    ax: Optional[plt.Axes] = None,
+    config: PlotConfig = DEFAULT_CONFIG
+) -> plt.Axes:
+    """Heatmap of sensitivity analysis results.
+
+    Args:
+        sensitivity_df: DataFrame with sensitivity results
+        x_col: Column for x-axis
+        y_col: Column for y-axis
+        value_col: Column for cell values
+        title: Plot title
+        ax: Matplotlib axes
+        config: PlotConfig instance
+
+    Returns:
+        Matplotlib axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=config.figsize, dpi=config.dpi)
+
+    # Pivot data
+    pivot_df = sensitivity_df.pivot(index=y_col, columns=x_col, values=value_col)
+
+    # Center colormap at 0 for profit
+    vmax = max(abs(pivot_df.values.min()), abs(pivot_df.values.max()))
+    vmin = -vmax
+
+    sns.heatmap(pivot_df, annot=True, fmt=',.0f', cmap='RdYlGn',
+                center=0, vmin=vmin, vmax=vmax,
+                ax=ax, cbar_kws={'label': value_col.replace('_', ' ').title()})
+
+    ax.set_xlabel(x_col.replace('_', ' ').title())
+    ax.set_ylabel(y_col.replace('_', ' ').title())
+    ax.set_title(title)
+
+    return ax
+
+
+def plot_cv_policy_value(
+    cv_result: Dict,
+    title: str = "Cross-Validated Policy Value",
+    ax: Optional[plt.Axes] = None,
+    config: PlotConfig = DEFAULT_CONFIG
+) -> plt.Axes:
+    """Plot cross-validation results with CI.
+
+    Args:
+        cv_result: Dict with 'mean', 'std', 'ci_lower', 'ci_upper', 'fold_values'
+        title: Plot title
+        ax: Matplotlib axes
+        config: PlotConfig instance
+
+    Returns:
+        Matplotlib axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=config.figsize, dpi=config.dpi)
+
+    fold_values = cv_result.get('fold_values', [])
+    mean_val = cv_result.get('mean', np.mean(fold_values))
+    ci_lower = cv_result.get('ci_lower', np.percentile(fold_values, 2.5))
+    ci_upper = cv_result.get('ci_upper', np.percentile(fold_values, 97.5))
+
+    # Bar plot for each fold
+    x = range(len(fold_values))
+    ax.bar(x, fold_values, color='tab:blue', alpha=0.7, label='Fold Values')
+
+    # Mean line
+    ax.axhline(mean_val, color='red', linestyle='-', linewidth=2,
+               label=f'Mean: {mean_val:.2f}')
+
+    # CI band
+    ax.axhspan(ci_lower, ci_upper, alpha=0.2, color='red',
+               label=f'95% CI: [{ci_lower:.2f}, {ci_upper:.2f}]')
+
+    ax.set_xlabel('Fold')
+    ax.set_ylabel('Policy Value')
+    ax.set_title(title)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f'Fold {i+1}' for i in x])
+    ax.legend()
+
+    return ax
+
+
+def plot_tree_depth_sensitivity(
+    depth_df: pd.DataFrame,
+    title: str = "Policy Sensitivity to Tree Depth",
+    ax: Optional[plt.Axes] = None,
+    config: PlotConfig = DEFAULT_CONFIG
+) -> plt.Figure:
+    """Plot sensitivity to tree depth.
+
+    Args:
+        depth_df: DataFrame with columns 'depth', 'n_targeted', 'policy_value'
+        title: Plot title
+        ax: Matplotlib axes (ignored, creates new figure)
+        config: PlotConfig instance
+
+    Returns:
+        Matplotlib figure
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), dpi=config.dpi)
+
+    # Left: N Targeted
+    axes[0].plot(depth_df['depth'], depth_df['n_targeted'], 'o-',
+                 color='tab:blue', linewidth=2, markersize=8)
+    axes[0].set_xlabel('Tree Depth')
+    axes[0].set_ylabel('N Targeted')
+    axes[0].set_title('Targeting Volume by Depth')
+    axes[0].set_xticks(depth_df['depth'])
+
+    # Right: Policy Value
+    axes[1].plot(depth_df['depth'], depth_df['policy_value'], 's-',
+                 color='tab:green', linewidth=2, markersize=8)
+    axes[1].set_xlabel('Tree Depth')
+    axes[1].set_ylabel('Policy Value')
+    axes[1].set_title('Policy Value by Depth')
+    axes[1].set_xticks(depth_df['depth'])
+
+    fig.suptitle(title, fontsize=config.title_fontsize, y=1.02)
+    fig.tight_layout()
+
+    return fig
+
+
+def plot_policy_tree_simple(
+    tree_rules: List[Dict],
+    title: str = "Policy Tree Rules",
+    ax: Optional[plt.Axes] = None,
+    config: PlotConfig = DEFAULT_CONFIG
+) -> plt.Axes:
+    """Simple visualization of extracted tree rules.
+
+    Args:
+        tree_rules: List of rule dictionaries from extract_tree_rules
+        title: Plot title
+        ax: Matplotlib axes
+        config: PlotConfig instance
+
+    Returns:
+        Matplotlib axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(12, max(6, len(tree_rules) * 0.5)),
+                               dpi=config.dpi)
+
+    # Format rules
+    y_positions = range(len(tree_rules))
+    colors = ['tab:green' if r['action'] == 'TARGET' else 'tab:red'
+              for r in tree_rules]
+
+    for i, rule in enumerate(tree_rules):
+        # Format conditions
+        conditions = ' AND '.join([
+            f"{feat} {op} {val:.2f}" if isinstance(val, float) else f"{feat} {op} {val}"
+            for feat, op, val in rule['conditions']
+        ])
+
+        text = f"IF {conditions}\n→ {rule['action']} (n={rule['n_samples']})"
+
+        ax.text(0.02, i, text, fontsize=config.tick_fontsize,
+                verticalalignment='center',
+                bbox=dict(boxstyle='round', facecolor=colors[i], alpha=0.3))
+
+    ax.set_xlim(0, 1)
+    ax.set_ylim(-0.5, len(tree_rules) - 0.5)
+    ax.set_title(title)
+    ax.axis('off')
+
+    return ax

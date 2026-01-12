@@ -1391,3 +1391,516 @@ def run_refutation_tests(
         subset=subset_result,
         all_passed=placebo_result.passed and subset_result.passed
     )
+
+
+# =============================================================================
+# Improved Functions (v2) - Batch 1
+# =============================================================================
+
+class CovariateSelectionResult(NamedTuple):
+    """Result of causal covariate selection."""
+    selected_features: List[str]
+    confounders: List[str]
+    outcome_only: List[str]
+    selection_only: List[str]
+    role_df: pd.DataFrame
+    original_ps_auc: float
+    selected_ps_auc: float
+
+
+def select_causal_covariates_v2(
+    X: Union[np.ndarray, pd.DataFrame],
+    T: np.ndarray,
+    Y: np.ndarray,
+    feature_names: Optional[List[str]] = None,
+    ps_importance_method: str = "both",
+    ps_threshold_pct: float = 75,
+    outcome_threshold: float = 0.1,
+    include_outcome_only: bool = True
+) -> CovariateSelectionResult:
+    """Select causal covariates by removing selection-only variables.
+
+    This function identifies and removes variables that predict treatment
+    but not outcome (selection-only), which can cause positivity violations
+    without reducing confounding bias.
+
+    Strategy:
+    - Keep: Confounders (predict both T and Y)
+    - Keep: Outcome-only (predict Y but not T) - improves efficiency
+    - Remove: Selection-only (predict T but not Y) - causes positivity issues
+
+    Args:
+        X: Covariate matrix or DataFrame
+        T: Treatment indicator
+        Y: Outcome variable
+        feature_names: Column names (required if X is ndarray)
+        ps_importance_method: "logistic", "gbm", or "both" (average)
+        ps_threshold_pct: Percentile threshold for high PS importance
+        outcome_threshold: Absolute correlation threshold for outcome
+        include_outcome_only: Whether to include outcome-only predictors
+
+    Returns:
+        CovariateSelectionResult with selected features and diagnostics
+    """
+    if isinstance(X, pd.DataFrame):
+        feature_names = X.columns.tolist()
+        X_arr = X.values
+    else:
+        X_arr = X
+        if feature_names is None:
+            feature_names = [f"X{i}" for i in range(X_arr.shape[1])]
+
+    # Compute PS importance using multiple methods
+    ps_importance = np.zeros(X_arr.shape[1])
+
+    if ps_importance_method in ["logistic", "both"]:
+        # Logistic regression coefficients
+        lr = LogisticRegression(max_iter=1000, penalty='l2', C=1.0)
+        lr.fit(X_arr, T)
+        lr_imp = np.abs(lr.coef_[0])
+        lr_imp = lr_imp / lr_imp.max()
+        ps_importance += lr_imp
+
+    if ps_importance_method in ["gbm", "both"]:
+        # GBM feature importance
+        gbm = GradientBoostingClassifier(
+            n_estimators=100, max_depth=3, min_samples_leaf=20, random_state=42
+        )
+        gbm.fit(X_arr, T)
+        gbm_imp = gbm.feature_importances_
+        gbm_imp = gbm_imp / gbm_imp.max()
+        ps_importance += gbm_imp
+
+    if ps_importance_method == "both":
+        ps_importance = ps_importance / 2
+
+    # Outcome correlation (absolute Pearson)
+    outcome_corr = np.array([
+        np.abs(np.corrcoef(X_arr[:, i], Y)[0, 1])
+        for i in range(X_arr.shape[1])
+    ])
+    outcome_corr = np.nan_to_num(outcome_corr, 0)
+
+    # Dynamic threshold based on percentile
+    ps_threshold = np.percentile(ps_importance, ps_threshold_pct)
+
+    # Classification
+    confounders = []
+    outcome_only = []
+    selection_only = []
+    neither = []
+
+    for i, name in enumerate(feature_names):
+        ps_high = ps_importance[i] > ps_threshold
+        out_high = outcome_corr[i] > outcome_threshold
+
+        if ps_high and out_high:
+            confounders.append(name)
+        elif ps_high and not out_high:
+            selection_only.append(name)
+        elif not ps_high and out_high:
+            outcome_only.append(name)
+        else:
+            neither.append(name)
+
+    # Selected features
+    selected = confounders.copy()
+    if include_outcome_only:
+        selected.extend(outcome_only)
+    # Note: 'neither' variables are excluded as they don't help
+
+    # Create role DataFrame
+    role_df = pd.DataFrame({
+        'feature': feature_names,
+        'ps_importance': ps_importance,
+        'outcome_correlation': outcome_corr,
+        'role': [
+            'Confounder' if f in confounders else
+            'Outcome-only' if f in outcome_only else
+            'Selection-only' if f in selection_only else
+            'Neither'
+            for f in feature_names
+        ]
+    }).sort_values('ps_importance', ascending=False)
+
+    # Compute PS AUC before and after
+    original_ps_auc = roc_auc_score(T, LogisticRegression(max_iter=1000).fit(X_arr, T).predict_proba(X_arr)[:, 1])
+
+    if len(selected) > 0:
+        selected_idx = [feature_names.index(f) for f in selected]
+        X_selected = X_arr[:, selected_idx]
+        selected_ps_auc = roc_auc_score(T, LogisticRegression(max_iter=1000).fit(X_selected, T).predict_proba(X_selected)[:, 1])
+    else:
+        selected_ps_auc = 0.5
+
+    return CovariateSelectionResult(
+        selected_features=selected,
+        confounders=confounders,
+        outcome_only=outcome_only,
+        selection_only=selection_only,
+        role_df=role_df,
+        original_ps_auc=original_ps_auc,
+        selected_ps_auc=selected_ps_auc
+    )
+
+
+class CATEEnsembleResult(NamedTuple):
+    """Result of CATE ensemble."""
+    cate: np.ndarray
+    cate_std: np.ndarray
+    weights: Dict[str, float]
+    model_cates: Dict[str, np.ndarray]
+    model_agreement: float
+
+
+def create_cate_ensemble(
+    cate_dict: Dict[str, np.ndarray],
+    rscorer_dict: Optional[Dict[str, float]] = None,
+    stable_models: Optional[List[str]] = None,
+    weighting: str = "rscorer",
+    agreement_threshold: float = 0.3
+) -> CATEEnsembleResult:
+    """Create weighted ensemble of CATE predictions.
+
+    Combines multiple CATE models to reduce variance and improve
+    robustness. Weights can be based on RScorer (causal loss) or
+    equal weighting.
+
+    Args:
+        cate_dict: Dict mapping model name to CATE array
+        rscorer_dict: Dict mapping model name to R-score (lower is better)
+        stable_models: List of model names to include (default: auto-select)
+        weighting: "rscorer" (inverse R-score) or "equal"
+        agreement_threshold: Minimum pairwise correlation for inclusion
+
+    Returns:
+        CATEEnsembleResult with ensemble CATE and diagnostics
+    """
+    if stable_models is None:
+        # Default stable models based on typical performance
+        stable_models = ['s_learner', 'causal_forest_dml', 'x_learner', 't_learner']
+        stable_models = [m for m in stable_models if m in cate_dict]
+
+    if len(stable_models) == 0:
+        stable_models = list(cate_dict.keys())
+
+    # Filter to available models
+    available_models = [m for m in stable_models if m in cate_dict]
+
+    if len(available_models) == 0:
+        raise ValueError("No valid models found in cate_dict")
+
+    # Filter by agreement (correlation) if multiple models
+    if len(available_models) > 2:
+        # Compute pairwise correlations
+        model_cates = [cate_dict[m] for m in available_models]
+        n_models = len(model_cates)
+        keep_mask = np.ones(n_models, dtype=bool)
+
+        for i in range(n_models):
+            if not keep_mask[i]:
+                continue
+            correlations = []
+            for j in range(n_models):
+                if i != j and keep_mask[j]:
+                    corr = np.corrcoef(model_cates[i], model_cates[j])[0, 1]
+                    correlations.append(corr if not np.isnan(corr) else 0)
+
+            # Exclude if low agreement with all others
+            if len(correlations) > 0 and np.mean(correlations) < agreement_threshold:
+                keep_mask[i] = False
+
+        available_models = [m for m, keep in zip(available_models, keep_mask) if keep]
+
+    # Compute weights
+    if weighting == "rscorer" and rscorer_dict is not None:
+        # Inverse R-score weighting (lower R-score = higher weight)
+        weights = {}
+        for m in available_models:
+            if m in rscorer_dict and rscorer_dict[m] > 0:
+                weights[m] = 1 / rscorer_dict[m]
+            else:
+                weights[m] = 1.0  # Default weight
+    else:
+        # Equal weighting
+        weights = {m: 1.0 for m in available_models}
+
+    # Normalize weights
+    total = sum(weights.values())
+    weights = {k: v / total for k, v in weights.items()}
+
+    # Weighted average
+    cate_ensemble = sum(weights[m] * cate_dict[m] for m in available_models)
+
+    # Ensemble uncertainty (weighted std of model predictions)
+    cate_stack = np.stack([cate_dict[m] for m in available_models])
+    cate_std = np.sqrt(np.average(
+        (cate_stack - cate_ensemble) ** 2,
+        weights=[weights[m] for m in available_models],
+        axis=0
+    ))
+
+    # Model agreement (average pairwise correlation)
+    if len(available_models) > 1:
+        corrs = []
+        for i, m1 in enumerate(available_models):
+            for m2 in available_models[i+1:]:
+                corr = np.corrcoef(cate_dict[m1], cate_dict[m2])[0, 1]
+                if not np.isnan(corr):
+                    corrs.append(corr)
+        model_agreement = np.mean(corrs) if corrs else 1.0
+    else:
+        model_agreement = 1.0
+
+    return CATEEnsembleResult(
+        cate=cate_ensemble,
+        cate_std=cate_std,
+        weights=weights,
+        model_cates={m: cate_dict[m] for m in available_models},
+        model_agreement=model_agreement
+    )
+
+
+# =============================================================================
+# Improved Functions (v2) - Batch 2: GRF and DR-Learner
+# =============================================================================
+
+class GRFResult(NamedTuple):
+    """Result of GRF CATE estimation with confidence intervals."""
+    cate: np.ndarray
+    cate_lower: np.ndarray
+    cate_upper: np.ndarray
+    ate: float
+    ate_se: float
+    model: object
+
+
+def estimate_cate_grf_v2(
+    Y: np.ndarray,
+    T: np.ndarray,
+    X: np.ndarray,
+    X_predict: Optional[np.ndarray] = None,
+    n_estimators: int = 500,
+    min_samples_leaf: int = 20,
+    honest: bool = True,
+    alpha: float = 0.05,
+    random_state: int = 42
+) -> GRFResult:
+    """Estimate CATE using Generalized Random Forest with local centering.
+
+    Uses econml.grf.CausalForest which provides:
+    - Honest splitting (separate samples for splitting and estimation)
+    - Local centering for debiasing
+    - Individual confidence intervals via forest variance estimation
+
+    Args:
+        Y: Outcome variable (n_samples,)
+        T: Treatment indicator (n_samples,)
+        X: Covariate matrix for training (n_samples, n_features)
+        X_predict: Covariate matrix for prediction (default: X)
+        n_estimators: Number of trees
+        min_samples_leaf: Minimum samples per leaf
+        honest: Use honest splitting
+        alpha: Significance level for confidence intervals
+        random_state: Random seed
+
+    Returns:
+        GRFResult with CATE, confidence intervals, and model
+    """
+    try:
+        from econml.grf import CausalForest
+
+        if X_predict is None:
+            X_predict = X
+
+        grf = CausalForest(
+            n_estimators=n_estimators,
+            min_samples_leaf=min_samples_leaf,
+            honest=honest,
+            inference=True,
+            random_state=random_state,
+            n_jobs=-1
+        )
+
+        grf.fit(Y, T, X=X)
+
+        # CATE predictions
+        cate = grf.effect(X_predict).flatten()
+
+        # Confidence intervals
+        cate_lower, cate_upper = grf.effect_interval(X_predict, alpha=alpha)
+        cate_lower = cate_lower.flatten()
+        cate_upper = cate_upper.flatten()
+
+        # ATE (average of CATE)
+        ate = cate.mean()
+        # Approximate SE using bootstrap or asymptotic variance
+        ate_se = cate.std() / np.sqrt(len(cate))
+
+        return GRFResult(
+            cate=cate,
+            cate_lower=cate_lower,
+            cate_upper=cate_upper,
+            ate=ate,
+            ate_se=ate_se,
+            model=grf
+        )
+
+    except ImportError:
+        warnings.warn(
+            "econml.grf.CausalForest not available. "
+            "Falling back to CausalForestDML."
+        )
+        return _estimate_cate_grf_fallback(Y, T, X, X_predict, n_estimators,
+                                           min_samples_leaf, alpha, random_state)
+
+
+def _estimate_cate_grf_fallback(
+    Y: np.ndarray,
+    T: np.ndarray,
+    X: np.ndarray,
+    X_predict: Optional[np.ndarray],
+    n_estimators: int,
+    min_samples_leaf: int,
+    alpha: float,
+    random_state: int
+) -> GRFResult:
+    """Fallback using CausalForestDML when GRF not available."""
+    from econml.dml import CausalForestDML
+
+    if X_predict is None:
+        X_predict = X
+
+    cf = CausalForestDML(
+        model_y=GradientBoostingRegressor(
+            n_estimators=100, max_depth=4, min_samples_leaf=20, random_state=random_state
+        ),
+        model_t=LogisticRegression(max_iter=1000, random_state=random_state),
+        n_estimators=n_estimators,
+        min_samples_leaf=min_samples_leaf,
+        random_state=random_state,
+        n_jobs=-1
+    )
+
+    cf.fit(Y, T, X=X)
+
+    cate = cf.effect(X_predict).flatten()
+    ci = cf.effect_interval(X_predict, alpha=alpha)
+    cate_lower = ci[0].flatten()
+    cate_upper = ci[1].flatten()
+
+    ate = cate.mean()
+    ate_se = cate.std() / np.sqrt(len(cate))
+
+    return GRFResult(
+        cate=cate,
+        cate_lower=cate_lower,
+        cate_upper=cate_upper,
+        ate=ate,
+        ate_se=ate_se,
+        model=cf
+    )
+
+
+class DRLearnerResult(NamedTuple):
+    """Result of DR-Learner CATE estimation."""
+    cate: np.ndarray
+    cate_lower: Optional[np.ndarray]
+    cate_upper: Optional[np.ndarray]
+    ate: float
+    ate_se: float
+    model: object
+
+
+def estimate_cate_dr_learner(
+    Y: np.ndarray,
+    T: np.ndarray,
+    X: np.ndarray,
+    X_predict: Optional[np.ndarray] = None,
+    cv: int = 5,
+    alpha: float = 0.05,
+    model_propensity: Optional[object] = None,
+    model_regression: Optional[object] = None,
+    model_final: Optional[object] = None,
+    random_state: int = 42
+) -> DRLearnerResult:
+    """Estimate CATE using Doubly Robust Learner.
+
+    DR-Learner (Kennedy 2020) is doubly robust:
+    - Consistent if either propensity OR outcome model is correct
+    - Lower variance when both are correct
+
+    Args:
+        Y: Outcome variable (n_samples,)
+        T: Treatment indicator (n_samples,)
+        X: Covariate matrix for training (n_samples, n_features)
+        X_predict: Covariate matrix for prediction (default: X)
+        cv: Number of cross-validation folds
+        alpha: Significance level for confidence intervals
+        model_propensity: Custom propensity model
+        model_regression: Custom outcome regression model
+        model_final: Custom final stage model
+        random_state: Random seed
+
+    Returns:
+        DRLearnerResult with CATE, confidence intervals, and model
+    """
+    from econml.dr import DRLearner
+
+    if X_predict is None:
+        X_predict = X
+
+    # Default models
+    if model_propensity is None:
+        model_propensity = LogisticRegressionCV(cv=cv, max_iter=1000, n_jobs=-1)
+
+    if model_regression is None:
+        model_regression = GradientBoostingRegressor(
+            n_estimators=200, max_depth=4, min_samples_leaf=20,
+            learning_rate=0.05, random_state=random_state
+        )
+
+    if model_final is None:
+        model_final = GradientBoostingRegressor(
+            n_estimators=100, max_depth=3, min_samples_leaf=20,
+            learning_rate=0.05, random_state=random_state
+        )
+
+    dr = DRLearner(
+        model_propensity=model_propensity,
+        model_regression=model_regression,
+        model_final=model_final,
+        cv=cv,
+        random_state=random_state
+    )
+
+    dr.fit(Y, T, X=X)
+
+    # CATE predictions
+    cate = dr.effect(X_predict).flatten()
+
+    # Confidence intervals (if available)
+    try:
+        ci = dr.effect_interval(X_predict, alpha=alpha)
+        cate_lower = ci[0].flatten()
+        cate_upper = ci[1].flatten()
+    except Exception:
+        cate_lower = None
+        cate_upper = None
+
+    # ATE
+    ate = dr.ate(X=X)
+    try:
+        ate_ci = dr.ate_interval(X=X, alpha=alpha)
+        ate_se = (ate_ci[1] - ate_ci[0]) / (2 * 1.96)
+    except Exception:
+        ate_se = cate.std() / np.sqrt(len(cate))
+
+    return DRLearnerResult(
+        cate=cate,
+        cate_lower=cate_lower,
+        cate_upper=cate_upper,
+        ate=float(ate),
+        ate_se=float(ate_se),
+        model=dr
+    )

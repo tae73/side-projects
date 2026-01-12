@@ -28,6 +28,11 @@ from .business import (
     extract_campaign_cost,
     compute_targeting_summary,
     compute_segment_targeting_priority,
+    # Policy ROI
+    compute_policy_roi,
+    create_segment_targeting_report,
+    compare_policies_roi,
+    compute_policy_lift_metrics,
 )
 
 from .utils import (
@@ -118,6 +123,16 @@ from .plots import (
     # Refutation Test Plots
     plot_placebo_comparison,
     plot_subset_correlation,
+    # Policy Learning Plots
+    plot_policy_comparison,
+    plot_policy_comparison_dual,
+    plot_policy_regions,
+    plot_cate_confidence_scatter,
+    plot_segment_policy_heatmap,
+    plot_sensitivity_heatmap,
+    plot_cv_policy_value,
+    plot_tree_depth_sensitivity,
+    plot_policy_tree_simple,
 )
 
 from .ray_utils import (
@@ -141,4 +156,37 @@ from .ray_utils import (
     tune_cate_model_optuna,
     tune_cate_models_optuna,
     get_best_tuned_configs_optuna,
+)
+
+from .policy import (
+    # Types
+    PolicyConfig,
+    PolicyResult,
+    PolicyValueResult,
+    CVResult,
+    # Policy Value Estimation
+    estimate_policy_value_ipw,
+    estimate_policy_value_dr,
+    estimate_policy_value_dr_vectorized,
+    # Policy Creation
+    create_threshold_policy,
+    create_conservative_policy,
+    create_risk_adjusted_policy,
+    create_budget_constrained_policy,
+    create_segment_policy,
+    # Rule Extraction
+    extract_tree_rules,
+    format_rules_as_text,
+    export_policy_tree_text,
+    # Policy Comparison
+    compare_policies,
+    compute_policy_lift,
+    # Robustness Analysis
+    cross_validate_policy_value,
+    sensitivity_analysis,
+    tree_depth_sensitivity,
+    bootstrap_policy_ci,
+    # A/B Test Design
+    calculate_ab_sample_size,
+    design_ab_test,
 )

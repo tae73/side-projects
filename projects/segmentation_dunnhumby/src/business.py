@@ -318,3 +318,202 @@ def compute_segment_targeting_priority(
     df = df.drop('priority_rank', axis=1)
 
     return df.reset_index(drop=True)
+
+
+# =============================================================================
+# Policy ROI Functions
+# =============================================================================
+
+def compute_policy_roi(
+    policy: np.ndarray,
+    cate: np.ndarray,
+    config: ROIConfig
+) -> Dict[str, float]:
+    """Compute ROI metrics for a given policy.
+
+    Args:
+        policy: Policy assignments 0/1
+        cate: CATE predictions
+        config: ROI configuration
+
+    Returns:
+        Dict with ROI metrics
+    """
+    n_targeted = int(policy.sum())
+    n_total = len(policy)
+
+    # Expected incremental sales (sum of CATE for targeted customers)
+    incremental_sales = (cate * policy).sum()
+
+    # Revenue and cost
+    revenue = incremental_sales * config.margin_rate
+    cost = n_targeted * config.cost_per_contact
+    profit = revenue - cost
+    roi = profit / cost if cost > 0 else 0
+
+    return {
+        'n_targeted': n_targeted,
+        'pct_targeted': n_targeted / n_total * 100,
+        'incremental_sales': incremental_sales,
+        'revenue': revenue,
+        'cost': cost,
+        'profit': profit,
+        'roi': roi,
+        'roi_pct': roi * 100,
+    }
+
+
+def create_segment_targeting_report(
+    cate: np.ndarray,
+    cate_lower: np.ndarray,
+    segments: np.ndarray,
+    ps: np.ndarray,
+    config: ROIConfig,
+    segment_names: Optional[Dict[int, str]] = None
+) -> pd.DataFrame:
+    """Create detailed targeting report by segment.
+
+    Args:
+        cate: CATE point estimates
+        cate_lower: CATE lower bounds
+        segments: Segment assignments
+        ps: Propensity scores
+        config: ROI configuration
+        segment_names: Segment name mapping
+
+    Returns:
+        DataFrame with segment-level targeting recommendations
+    """
+    breakeven = config.cost_per_contact / config.margin_rate
+
+    unique_segments = np.unique(segments[~np.isnan(segments)]).astype(int)
+    results = []
+
+    for seg in unique_segments:
+        mask = segments == seg
+        seg_cate = cate[mask]
+        seg_cate_lower = cate_lower[mask]
+        seg_ps = ps[mask]
+        n = mask.sum()
+
+        # Metrics
+        mean_cate = seg_cate.mean()
+        std_cate = seg_cate.std()
+        median_cate = np.median(seg_cate)
+
+        # Confidence metrics (using bounds)
+        pct_confident_positive = (seg_cate_lower > breakeven).mean() * 100
+        pct_confident_negative = (seg_cate_lower + (seg_cate - seg_cate_lower) * 2 < 0).mean() * 100
+        pct_uncertain = 100 - pct_confident_positive - pct_confident_negative
+
+        # PS overlap
+        pct_in_overlap = ((seg_ps >= 0.1) & (seg_ps <= 0.9)).mean() * 100
+
+        # Expected value
+        expected_profit_per_customer = mean_cate * config.margin_rate - config.cost_per_contact
+
+        # Recommendation
+        if pct_confident_positive > 20 and mean_cate > breakeven:
+            action = 'Expand Targeting'
+            specific_action = 'Increase TypeA frequency; add similar campaigns'
+        elif pct_confident_positive > 10 and mean_cate > 0:
+            action = 'Maintain Targeting'
+            specific_action = 'Continue TypeA targeting at current level'
+        elif mean_cate < 0 or pct_confident_negative > 30:
+            action = 'Reduce Targeting'
+            specific_action = 'Exclude from TypeA; switch to TypeB/C or loyalty programs'
+        else:
+            action = 'Test & Learn'
+            specific_action = 'Run small-scale A/B test before full rollout'
+
+        seg_name = segment_names.get(seg, f'Segment {seg}') if segment_names else f'Segment {seg}'
+
+        results.append({
+            'segment': seg,
+            'segment_name': seg_name,
+            'n_customers': n,
+            'mean_cate': mean_cate,
+            'std_cate': std_cate,
+            'median_cate': median_cate,
+            'pct_confident_positive': pct_confident_positive,
+            'pct_confident_negative': pct_confident_negative,
+            'pct_uncertain': pct_uncertain,
+            'pct_in_overlap': pct_in_overlap,
+            'expected_profit_per_customer': expected_profit_per_customer,
+            'recommended_action': action,
+            'specific_action': specific_action,
+        })
+
+    df = pd.DataFrame(results)
+
+    # Sort by mean_cate descending
+    df = df.sort_values('mean_cate', ascending=False)
+
+    return df.reset_index(drop=True)
+
+
+def compare_policies_roi(
+    policies: Dict[str, np.ndarray],
+    cate: np.ndarray,
+    config: ROIConfig
+) -> pd.DataFrame:
+    """Compare multiple policies on ROI metrics.
+
+    Args:
+        policies: Dict mapping policy name to policy array
+        cate: CATE predictions
+        config: ROI configuration
+
+    Returns:
+        DataFrame with policy comparison
+    """
+    results = []
+
+    for name, policy in policies.items():
+        roi_metrics = compute_policy_roi(policy, cate, config)
+        roi_metrics['policy'] = name
+        results.append(roi_metrics)
+
+    df = pd.DataFrame(results)
+
+    # Reorder columns
+    cols = ['policy', 'n_targeted', 'pct_targeted', 'incremental_sales',
+            'revenue', 'cost', 'profit', 'roi', 'roi_pct']
+    df = df[cols]
+
+    return df.sort_values('profit', ascending=False).reset_index(drop=True)
+
+
+def compute_policy_lift_metrics(
+    policy: np.ndarray,
+    baseline_policy: np.ndarray,
+    cate: np.ndarray,
+    config: ROIConfig
+) -> Dict[str, float]:
+    """Compute lift of policy over baseline.
+
+    Args:
+        policy: Proposed policy
+        baseline_policy: Baseline policy (e.g., current practice)
+        cate: CATE predictions
+        config: ROI configuration
+
+    Returns:
+        Dict with lift metrics
+    """
+    roi_policy = compute_policy_roi(policy, cate, config)
+    roi_baseline = compute_policy_roi(baseline_policy, cate, config)
+
+    profit_lift = roi_policy['profit'] - roi_baseline['profit']
+    targeting_change = roi_policy['n_targeted'] - roi_baseline['n_targeted']
+
+    return {
+        'policy_profit': roi_policy['profit'],
+        'baseline_profit': roi_baseline['profit'],
+        'profit_lift': profit_lift,
+        'profit_lift_pct': profit_lift / abs(roi_baseline['profit']) * 100 if roi_baseline['profit'] != 0 else np.inf,
+        'policy_n_targeted': roi_policy['n_targeted'],
+        'baseline_n_targeted': roi_baseline['n_targeted'],
+        'targeting_change': targeting_change,
+        'efficiency_ratio': profit_lift / abs(targeting_change) if targeting_change != 0 else np.inf,
+    }
