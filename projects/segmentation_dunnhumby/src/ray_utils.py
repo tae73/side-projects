@@ -1590,3 +1590,389 @@ class RayContext:
         if self.initialized:
             shutdown_ray()
         return False
+
+
+# =============================================================================
+# Policy Tree Tuning with Optuna
+# =============================================================================
+
+def get_policy_param_space_optuna(model_type: str) -> Dict[str, Any]:
+    """Get Optuna search space for policy tree models.
+
+    Args:
+        model_type: One of 'policy_tree', 'dr_policy_tree', 'cate_tree'
+
+    Returns:
+        Dict mapping parameter names to (low, high, type) tuples or list of choices
+    """
+    if model_type == 'policy_tree':
+        # econml PolicyTree parameters
+        return {
+            'max_depth': (2, 8, 'int'),
+            'min_samples_leaf': (5, 150, 'int'),
+            'min_balancedness_tol': (0.3, 0.5, 'float'),
+        }
+
+    elif model_type == 'dr_policy_tree':
+        # econml DRPolicyTree parameters
+        return {
+            'max_depth': (2, 8, 'int'),
+            'min_samples_leaf': (5, 100, 'int'),
+            'min_impurity_decrease': (0.0, 0.05, 'float'),
+        }
+
+    elif model_type == 'cate_tree':
+        # sklearn DecisionTreeRegressor for CATE approximation
+        return {
+            'max_depth': (2, 10, 'int'),
+            'min_samples_leaf': (5, 150, 'int'),
+            'min_samples_split': (10, 100, 'int'),
+            'min_impurity_decrease': (0.0, 0.1, 'float'),
+            'ccp_alpha': (0.0, 0.05, 'float'),
+            'max_features': ['sqrt', 'log2', 0.5, 0.8, 1.0, None],
+        }
+
+    else:
+        raise ValueError(f"Unknown model_type: {model_type}")
+
+
+def _sample_policy_params_optuna(trial, param_space: Dict[str, Any]) -> Dict[str, Any]:
+    """Sample parameters from Optuna trial for policy trees."""
+    params = {}
+
+    for name, spec in param_space.items():
+        if isinstance(spec, list):
+            # Categorical
+            params[name] = trial.suggest_categorical(name, spec)
+        elif isinstance(spec, tuple) and len(spec) == 3:
+            low, high, param_type = spec
+            if param_type == 'int':
+                params[name] = trial.suggest_int(name, low, high)
+            elif param_type == 'float':
+                params[name] = trial.suggest_float(name, low, high)
+            elif param_type == 'log':
+                params[name] = trial.suggest_float(name, low, high, log=True)
+        else:
+            params[name] = spec  # Fixed value
+
+    return params
+
+
+def tune_policy_tree_optuna(
+    model_type: str,
+    X: np.ndarray,
+    Y: np.ndarray,
+    T: np.ndarray,
+    ps: np.ndarray,
+    cate: Optional[np.ndarray] = None,
+    cost_per_contact: float = 0.0,
+    margin_rate: float = 1.0,
+    n_trials: int = 50,
+    param_space: Optional[Dict[str, Any]] = None,
+    seed: int = 42,
+    verbose: bool = False,
+    timeout: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Tune policy tree using Optuna with policy value optimization.
+
+    Args:
+        model_type: 'policy_tree', 'dr_policy_tree', or 'cate_tree'
+        X: Feature matrix
+        Y: Outcome variable
+        T: Treatment indicator
+        ps: Propensity scores
+        cate: CATE predictions (required for 'cate_tree')
+        cost_per_contact: Cost per treatment
+        margin_rate: Profit margin rate
+        n_trials: Number of Optuna trials
+        param_space: Custom parameter space (optional)
+        seed: Random seed
+        verbose: Show progress
+        timeout: Timeout in seconds
+
+    Returns:
+        Dict with 'best_params', 'best_value', 'best_model', 'study', 'all_results'
+    """
+    if not OPTUNA_AVAILABLE:
+        raise ImportError("Optuna not available. Install with: pip install optuna")
+
+    if param_space is None:
+        param_space = get_policy_param_space_optuna(model_type)
+
+    if model_type == 'cate_tree' and cate is None:
+        raise ValueError("cate is required for 'cate_tree' model_type")
+
+    # Import tree models
+    from sklearn.tree import DecisionTreeRegressor
+
+    try:
+        from econml.policy import PolicyTree, DRPolicyTree
+        ECONML_POLICY_AVAILABLE = True
+    except ImportError:
+        ECONML_POLICY_AVAILABLE = False
+
+    # Prepare profit-based rewards for PolicyTree
+    if model_type == 'policy_tree' and cate is not None:
+        profit_if_target = cate * margin_rate - cost_per_contact
+        Y_rewards = np.column_stack([np.zeros_like(cate), profit_if_target])
+    else:
+        Y_rewards = None
+
+    all_results = []
+
+    def objective(trial):
+        params = _sample_policy_params_optuna(trial, param_space)
+
+        try:
+            if model_type == 'policy_tree':
+                if not ECONML_POLICY_AVAILABLE:
+                    return float('-inf')
+
+                tree = PolicyTree(
+                    max_depth=params.get('max_depth', 3),
+                    min_samples_leaf=params.get('min_samples_leaf', 20),
+                    min_balancedness_tol=params.get('min_balancedness_tol', 0.45),
+                    random_state=seed
+                )
+                tree.fit(X, Y_rewards)
+                policy = tree.predict(X)
+
+                # Profit-based value
+                value = (policy * (cate * margin_rate - cost_per_contact)).sum()
+
+            elif model_type == 'dr_policy_tree':
+                if not ECONML_POLICY_AVAILABLE:
+                    return float('-inf')
+
+                tree = DRPolicyTree(
+                    max_depth=params.get('max_depth', 3),
+                    min_samples_leaf=params.get('min_samples_leaf', 20),
+                    min_impurity_decrease=params.get('min_impurity_decrease', 0.0),
+                    honest=True,
+                    cv=3,
+                    random_state=seed
+                )
+                tree.fit(Y, T, X=X)
+                policy = tree.predict(X)
+
+                # Avoid trivial solutions
+                target_rate = policy.mean()
+                if target_rate < 0.01 or target_rate > 0.99:
+                    return float('-inf')
+
+                # IPW policy value
+                w = np.where(T == policy, 1 / np.where(policy == 1, ps, 1 - ps), 0)
+                value = (w * Y).sum() / (w.sum() + 1e-6)
+
+            elif model_type == 'cate_tree':
+                tree = DecisionTreeRegressor(
+                    max_depth=params.get('max_depth', 4),
+                    min_samples_leaf=params.get('min_samples_leaf', 20),
+                    min_samples_split=params.get('min_samples_split', 40),
+                    min_impurity_decrease=params.get('min_impurity_decrease', 0.0),
+                    ccp_alpha=params.get('ccp_alpha', 0.0),
+                    max_features=params.get('max_features', None),
+                    random_state=seed
+                )
+                tree.fit(X, cate)
+                tree_cate = tree.predict(X)
+                policy = (tree_cate > 0).astype(int)
+
+                # IPW policy value
+                w = np.where(T == policy, 1 / np.where(policy == 1, ps, 1 - ps), 0)
+                value = (w * Y).sum() / (w.sum() + 1e-6)
+
+            else:
+                return float('-inf')
+
+            # Store result
+            n_targeted = int(policy.sum())
+            all_results.append({
+                **params,
+                'value': value,
+                'n_targeted': n_targeted,
+                'pct_targeted': n_targeted / len(policy)
+            })
+
+            return value
+
+        except Exception as e:
+            if verbose:
+                logging.warning(f"Trial {trial.number} failed: {e}")
+            return float('-inf')
+
+    # Create study
+    sampler = TPESampler(seed=seed)
+    study = optuna.create_study(
+        direction='maximize',
+        sampler=sampler,
+        study_name=f'{model_type}_tuning'
+    )
+
+    # Optimize
+    optuna.logging.set_verbosity(optuna.logging.INFO if verbose else optuna.logging.WARNING)
+    study.optimize(
+        objective,
+        n_trials=n_trials,
+        timeout=timeout,
+        show_progress_bar=verbose
+    )
+
+    # Get best result and refit
+    best_params = study.best_params
+    best_value = study.best_value
+
+    # Refit best model
+    if model_type == 'policy_tree':
+        best_model = PolicyTree(
+            max_depth=best_params.get('max_depth', 3),
+            min_samples_leaf=best_params.get('min_samples_leaf', 20),
+            min_balancedness_tol=best_params.get('min_balancedness_tol', 0.45),
+            random_state=seed
+        )
+        best_model.fit(X, Y_rewards)
+
+    elif model_type == 'dr_policy_tree':
+        best_model = DRPolicyTree(
+            max_depth=best_params.get('max_depth', 3),
+            min_samples_leaf=best_params.get('min_samples_leaf', 20),
+            min_impurity_decrease=best_params.get('min_impurity_decrease', 0.0),
+            honest=True,
+            cv=3,
+            random_state=seed
+        )
+        best_model.fit(Y, T, X=X)
+
+    elif model_type == 'cate_tree':
+        best_model = DecisionTreeRegressor(
+            max_depth=best_params.get('max_depth', 4),
+            min_samples_leaf=best_params.get('min_samples_leaf', 20),
+            min_samples_split=best_params.get('min_samples_split', 40),
+            min_impurity_decrease=best_params.get('min_impurity_decrease', 0.0),
+            ccp_alpha=best_params.get('ccp_alpha', 0.0),
+            max_features=best_params.get('max_features', None),
+            random_state=seed
+        )
+        best_model.fit(X, cate)
+
+    else:
+        best_model = None
+
+    return {
+        'best_params': best_params,
+        'best_value': best_value,
+        'best_model': best_model,
+        'study': study,
+        'all_results': pd.DataFrame(all_results).sort_values('value', ascending=False)
+    }
+
+
+def tune_policy_trees_optuna(
+    model_types: List[str],
+    X: np.ndarray,
+    Y: np.ndarray,
+    T: np.ndarray,
+    ps: np.ndarray,
+    cate: Optional[np.ndarray] = None,
+    cost_per_contact: float = 0.0,
+    margin_rate: float = 1.0,
+    n_trials: int = 50,
+    seed: int = 42,
+    verbose: bool = True,
+    n_jobs: int = -1,
+) -> Dict[str, Dict[str, Any]]:
+    """Tune multiple policy trees in parallel using Ray + Optuna.
+
+    Args:
+        model_types: List of model types ('policy_tree', 'dr_policy_tree', 'cate_tree')
+        X, Y, T, ps, cate: Data arrays
+        cost_per_contact: Cost per treatment
+        margin_rate: Profit margin
+        n_trials: Optuna trials per model
+        seed: Random seed
+        verbose: Show progress
+        n_jobs: Number of parallel jobs (-1 for all CPUs)
+
+    Returns:
+        Dict mapping model_type to tuning results
+    """
+    if not OPTUNA_AVAILABLE:
+        raise ImportError("Optuna not available. Install with: pip install optuna")
+
+    results = {}
+
+    if RAY_AVAILABLE and ray.is_initialized() and n_jobs != 1:
+        if verbose:
+            print(f"Tuning {len(model_types)} policy trees in parallel ({n_trials} trials each)...")
+
+        @ray.remote
+        def _tune_remote(model_type, X_ref, Y_ref, T_ref, ps_ref, cate_ref,
+                         cost, margin, n_trials, seed):
+            X = ray.get(X_ref)
+            Y = ray.get(Y_ref)
+            T = ray.get(T_ref)
+            ps = ray.get(ps_ref)
+            cate = ray.get(cate_ref) if cate_ref is not None else None
+
+            result = tune_policy_tree_optuna(
+                model_type=model_type,
+                X=X, Y=Y, T=T, ps=ps, cate=cate,
+                cost_per_contact=cost,
+                margin_rate=margin,
+                n_trials=n_trials,
+                seed=seed,
+                verbose=False
+            )
+            # Remove non-serializable objects
+            result_clean = {k: v for k, v in result.items() if k != 'study'}
+            return model_type, result_clean
+
+        # Put data in Ray object store
+        X_ref = ray.put(X)
+        Y_ref = ray.put(Y)
+        T_ref = ray.put(T)
+        ps_ref = ray.put(ps)
+        cate_ref = ray.put(cate) if cate is not None else None
+
+        # Launch parallel tuning
+        futures = [
+            _tune_remote.remote(
+                model_type, X_ref, Y_ref, T_ref, ps_ref, cate_ref,
+                cost_per_contact, margin_rate, n_trials, seed + i
+            )
+            for i, model_type in enumerate(model_types)
+        ]
+
+        # Collect results
+        for result in ray.get(futures):
+            model_type, tuning_result = result
+            results[model_type] = tuning_result
+            if verbose:
+                print(f"  {model_type}: best_value={tuning_result['best_value']:.2f}")
+
+    else:
+        # Sequential tuning
+        if verbose:
+            print(f"Tuning {len(model_types)} policy trees sequentially ({n_trials} trials each)...")
+
+        for i, model_type in enumerate(model_types):
+            if verbose:
+                print(f"  Tuning {model_type}...")
+
+            result = tune_policy_tree_optuna(
+                model_type=model_type,
+                X=X, Y=Y, T=T, ps=ps, cate=cate,
+                cost_per_contact=cost_per_contact,
+                margin_rate=margin_rate,
+                n_trials=n_trials,
+                seed=seed + i,
+                verbose=verbose
+            )
+
+            # Remove non-serializable study object
+            results[model_type] = {k: v for k, v in result.items() if k != 'study'}
+
+            if verbose:
+                print(f"    best_value={result['best_value']:.2f}")
+
+    return results

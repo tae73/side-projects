@@ -936,3 +936,307 @@ ALL_FEATURE_COLS = TRACK1_FEATURE_COLS
 VALUE_FEATURES = (FEATURE_COLS['recency'] + FEATURE_COLS['frequency'] +
                   FEATURE_COLS['monetary'] + FEATURE_COLS['time'])
 NEED_FEATURES = FEATURE_COLS['behavioral'] + FEATURE_COLS['category']
+
+
+# =============================================================================
+# Improved Features - Batch 2
+# =============================================================================
+
+# Default interaction pairs based on domain knowledge
+INTERACTION_FEATURES = [
+    ('monetary_sales', 'discount_usage_pct'),   # High spender × Discount seeker
+    ('frequency', 'private_label_ratio'),        # Frequent shopper × PL preference
+    ('purchase_regularity', 'share_fresh'),      # Regular × Fresh food buyer
+    ('n_products', 'share_health_beauty'),       # Variety seeker × H&B focus
+    ('monetary_avg_basket_sales', 'n_departments'),  # Basket size × Dept diversity
+    ('recency', 'frequency'),                    # Recent × Frequent (engagement)
+]
+
+
+def add_interaction_features(
+    X_df: pd.DataFrame,
+    interactions: list = None,
+    prefix: str = 'int_'
+) -> pd.DataFrame:
+    """Add interaction terms to feature matrix.
+
+    Creates multiplicative interactions between specified feature pairs.
+    Useful for capturing non-linear relationships in treatment effect
+    heterogeneity.
+
+    Args:
+        X_df: Feature DataFrame
+        interactions: List of (feature1, feature2) tuples.
+            Default: INTERACTION_FEATURES
+        prefix: Prefix for new column names
+
+    Returns:
+        DataFrame with original features plus interaction terms
+    """
+    if interactions is None:
+        interactions = INTERACTION_FEATURES
+
+    X_new = X_df.copy()
+
+    for f1, f2 in interactions:
+        if f1 in X_df.columns and f2 in X_df.columns:
+            col_name = f'{prefix}{f1}_x_{f2}'
+            X_new[col_name] = X_df[f1] * X_df[f2]
+
+    return X_new
+
+
+def add_trend_features(
+    df_trans: pd.DataFrame,
+    pre_end_week: int,
+    recent_weeks: int = 8,
+    agg_cols: list = None
+) -> pd.DataFrame:
+    """Add trend features comparing recent vs past behavior.
+
+    Creates features that capture behavioral changes over time,
+    which may predict response to treatment.
+
+    Args:
+        df_trans: Transaction DataFrame with WEEK_NO, household_key
+        pre_end_week: Last week of pre-treatment period
+        recent_weeks: Number of weeks to consider as "recent"
+        agg_cols: Columns to aggregate (default: SALES_VALUE, BASKET_ID)
+
+    Returns:
+        DataFrame indexed by household_key with trend features:
+        - spending_trend: recent_sales / past_sales
+        - freq_trend: recent_freq / past_freq
+        - items_trend: recent_items / past_items
+    """
+    if agg_cols is None:
+        agg_cols = ['SALES_VALUE', 'BASKET_ID']
+
+    recent_start = pre_end_week - recent_weeks
+
+    # Split into recent and past periods
+    df_recent = df_trans[df_trans['WEEK_NO'] > recent_start]
+    df_past = df_trans[df_trans['WEEK_NO'] <= recent_start]
+
+    # Aggregate recent period
+    recent_agg = df_recent.groupby('household_key').agg(
+        recent_sales=('SALES_VALUE', 'sum'),
+        recent_freq=('BASKET_ID', 'nunique'),
+        recent_items=('QUANTITY', 'sum') if 'QUANTITY' in df_recent.columns else ('BASKET_ID', 'count')
+    )
+
+    # Aggregate past period
+    past_agg = df_past.groupby('household_key').agg(
+        past_sales=('SALES_VALUE', 'sum'),
+        past_freq=('BASKET_ID', 'nunique'),
+        past_items=('QUANTITY', 'sum') if 'QUANTITY' in df_past.columns else ('BASKET_ID', 'count')
+    )
+
+    # Combine and compute trends
+    trend_df = recent_agg.join(past_agg, how='outer').fillna(0)
+
+    # Compute ratio with smoothing to avoid division by zero
+    epsilon = 1.0
+    trend_df['spending_trend'] = trend_df['recent_sales'] / (trend_df['past_sales'] + epsilon)
+    trend_df['freq_trend'] = trend_df['recent_freq'] / (trend_df['past_freq'] + epsilon)
+    trend_df['items_trend'] = trend_df['recent_items'] / (trend_df['past_items'] + epsilon)
+
+    # Log transform for better distribution
+    trend_df['spending_trend_log'] = np.log1p(trend_df['spending_trend'])
+    trend_df['freq_trend_log'] = np.log1p(trend_df['freq_trend'])
+
+    return trend_df[['spending_trend', 'freq_trend', 'items_trend',
+                     'spending_trend_log', 'freq_trend_log']]
+
+
+def add_nonlinear_transforms(
+    X_df: pd.DataFrame,
+    log_cols: list = None,
+    rank_cols: list = None
+) -> pd.DataFrame:
+    """Add non-linear transformations to features.
+
+    Applies log transforms and percentile ranks to improve
+    distribution and robustness to outliers.
+
+    Args:
+        X_df: Feature DataFrame
+        log_cols: Columns to log-transform (default: monetary features)
+        rank_cols: Columns to convert to percentile ranks
+
+    Returns:
+        DataFrame with additional transformed columns
+    """
+    if log_cols is None:
+        log_cols = ['monetary_sales', 'frequency', 'n_products',
+                    'monetary_avg_basket_sales']
+
+    if rank_cols is None:
+        rank_cols = ['monetary_sales', 'monetary_avg_basket_sales']
+
+    X_new = X_df.copy()
+
+    # Log transforms
+    for col in log_cols:
+        if col in X_df.columns:
+            X_new[f'{col}_log'] = np.log1p(X_df[col])
+
+    # Percentile ranks
+    for col in rank_cols:
+        if col in X_df.columns:
+            X_new[f'{col}_rank'] = X_df[col].rank(pct=True)
+
+    return X_new
+
+
+# =============================================================================
+# Improved Features - Batch 4: Expanded Control Design
+# =============================================================================
+
+def build_scenario1_features_expanded(
+    df_features: pd.DataFrame,
+    df_campaign: pd.DataFrame,
+    df_campaign_desc: pd.DataFrame,
+    control_definition: str = 'expanded'
+) -> pd.DataFrame:
+    """Build Scenario 1 features with expanded control definition.
+
+    Original Scenario 1:
+    - Treatment: First TypeA campaign targeting
+    - Control: Never targeted by any campaign
+
+    Expanded Scenario 1:
+    - Treatment: First TypeA campaign targeting
+    - Control: Never targeted OR only TypeB/C targeted (never TypeA)
+
+    This increases the control group size and improves overlap with treatment.
+
+    Args:
+        df_features: Base customer features DataFrame
+        df_campaign: Campaign targeting DataFrame (household_key, CAMPAIGN)
+        df_campaign_desc: Campaign description DataFrame (CAMPAIGN, DESCRIPTION)
+        control_definition: 'original' or 'expanded'
+
+    Returns:
+        DataFrame with treatment indicator and expanded control
+    """
+    # Handle case where df_campaign already has DESCRIPTION column
+    if 'DESCRIPTION' in df_campaign.columns:
+        df_targeting = df_campaign.copy()
+    else:
+        # Merge campaign info
+        df_targeting = df_campaign.merge(
+            df_campaign_desc[['CAMPAIGN', 'DESCRIPTION']],
+            on='CAMPAIGN',
+            how='left'
+        )
+
+    # Extract campaign type from DESCRIPTION (e.g., "TypeA", "TypeB", "TypeC")
+    df_targeting['campaign_type'] = df_targeting['DESCRIPTION'].str.extract(r'(Type[ABC])')
+
+    # Get first campaign per customer
+    df_first = (
+        df_targeting.sort_values(['household_key', 'CAMPAIGN'])
+        .groupby('household_key')
+        .first()
+        .reset_index()
+        [['household_key', 'CAMPAIGN', 'campaign_type']]
+        .rename(columns={'CAMPAIGN': 'first_campaign', 'campaign_type': 'first_campaign_type'})
+    )
+
+    # Identify customers by targeting status
+    all_customers = set(df_features['household_key'])
+    ever_targeted = set(df_targeting['household_key'].unique())
+    never_targeted = all_customers - ever_targeted
+
+    # TypeA targeted customers
+    typeA_customers = set(
+        df_targeting[df_targeting['campaign_type'] == 'TypeA']['household_key'].unique()
+    )
+
+    # TypeB/C only customers (targeted but never by TypeA)
+    typeBC_only = ever_targeted - typeA_customers
+
+    # Build treatment/control indicators
+    df_result = df_features.copy()
+    df_result = df_result.merge(df_first, on='household_key', how='left')
+
+    if control_definition == 'original':
+        # Original: Control = never targeted
+        df_result['treatment'] = df_result['household_key'].isin(typeA_customers).astype(int)
+        df_result['in_sample'] = (
+            df_result['household_key'].isin(typeA_customers) |
+            df_result['household_key'].isin(never_targeted)
+        )
+        df_result['control_type'] = np.where(
+            df_result['household_key'].isin(never_targeted),
+            'never_targeted',
+            np.where(df_result['household_key'].isin(typeA_customers), 'treated', 'excluded')
+        )
+
+    elif control_definition == 'expanded':
+        # Expanded: Control = never targeted OR TypeB/C only
+        df_result['treatment'] = (
+            df_result['first_campaign_type'] == 'TypeA'
+        ).fillna(False).astype(int)
+
+        # In sample: TypeA first OR never targeted OR TypeB/C only
+        df_result['in_sample'] = (
+            (df_result['first_campaign_type'] == 'TypeA') |
+            df_result['household_key'].isin(never_targeted) |
+            df_result['household_key'].isin(typeBC_only)
+        )
+
+        df_result['control_type'] = np.where(
+            df_result['household_key'].isin(never_targeted),
+            'never_targeted',
+            np.where(
+                df_result['household_key'].isin(typeBC_only),
+                'typeBC_only',
+                np.where(df_result['treatment'] == 1, 'treated', 'excluded')
+            )
+        )
+
+    else:
+        raise ValueError(f"Unknown control_definition: {control_definition}")
+
+    # Summary statistics
+    summary = {
+        'n_total': len(df_result),
+        'n_in_sample': df_result['in_sample'].sum(),
+        'n_treatment': (df_result['treatment'] == 1).sum(),
+        'n_control': ((df_result['in_sample']) & (df_result['treatment'] == 0)).sum(),
+        'n_never_targeted': len(never_targeted),
+        'n_typeBC_only': len(typeBC_only),
+        'control_definition': control_definition
+    }
+
+    # Add summary as attribute (accessible via df_result.attrs)
+    df_result.attrs['sample_summary'] = summary
+
+    return df_result
+
+
+def get_expanded_control_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Get summary of expanded control design from built features.
+
+    Args:
+        df: DataFrame from build_scenario1_features_expanded
+
+    Returns:
+        Summary DataFrame
+    """
+    if 'control_type' not in df.columns:
+        raise ValueError("DataFrame must have 'control_type' column from build_scenario1_features_expanded")
+
+    summary = df.groupby('control_type').agg(
+        n_customers=('household_key', 'count'),
+        mean_monetary=('monetary_sales', 'mean') if 'monetary_sales' in df.columns else ('household_key', 'count'),
+        mean_frequency=('frequency', 'mean') if 'frequency' in df.columns else ('household_key', 'count'),
+    ).reset_index()
+
+    # Add percentages
+    total = summary['n_customers'].sum()
+    summary['pct'] = summary['n_customers'] / total * 100
+
+    return summary

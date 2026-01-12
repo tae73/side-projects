@@ -1722,13 +1722,13 @@ def estimate_cate_grf_v2(
             n_jobs=-1
         )
 
-        grf.fit(Y, T, X=X)
+        grf.fit(X, T, Y)
 
-        # CATE predictions
-        cate = grf.effect(X_predict).flatten()
+        # CATE predictions (econml.grf uses predict instead of effect)
+        cate = grf.predict(X_predict).flatten()
 
         # Confidence intervals
-        cate_lower, cate_upper = grf.effect_interval(X_predict, alpha=alpha)
+        cate_lower, cate_upper = grf.predict_interval(X_predict, alpha=alpha)
         cate_lower = cate_lower.flatten()
         cate_upper = cate_upper.flatten()
 
@@ -1846,13 +1846,23 @@ def estimate_cate_dr_learner(
         DRLearnerResult with CATE, confidence intervals, and model
     """
     from econml.dr import DRLearner
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.pipeline import Pipeline
 
     if X_predict is None:
         X_predict = X
 
-    # Default models
+    # Scale data for stable propensity estimation
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    X_predict_scaled = scaler.transform(X_predict)
+
+    # Default models with better convergence settings
     if model_propensity is None:
-        model_propensity = LogisticRegressionCV(cv=cv, max_iter=1000, n_jobs=-1)
+        # Use Pipeline with scaler for robust propensity model
+        model_propensity = LogisticRegression(
+            C=0.1, max_iter=2000, solver='lbfgs', n_jobs=-1
+        )
 
     if model_regression is None:
         model_regression = GradientBoostingRegressor(
@@ -1874,14 +1884,14 @@ def estimate_cate_dr_learner(
         random_state=random_state
     )
 
-    dr.fit(Y, T, X=X)
+    dr.fit(Y, T, X=X_scaled)
 
     # CATE predictions
-    cate = dr.effect(X_predict).flatten()
+    cate = dr.effect(X_predict_scaled).flatten()
 
     # Confidence intervals (if available)
     try:
-        ci = dr.effect_interval(X_predict, alpha=alpha)
+        ci = dr.effect_interval(X_predict_scaled, alpha=alpha)
         cate_lower = ci[0].flatten()
         cate_upper = ci[1].flatten()
     except Exception:
@@ -1889,9 +1899,9 @@ def estimate_cate_dr_learner(
         cate_upper = None
 
     # ATE
-    ate = dr.ate(X=X)
+    ate = dr.ate(X=X_scaled)
     try:
-        ate_ci = dr.ate_interval(X=X, alpha=alpha)
+        ate_ci = dr.ate_interval(X=X_scaled, alpha=alpha)
         ate_se = (ate_ci[1] - ate_ci[0]) / (2 * 1.96)
     except Exception:
         ate_se = cate.std() / np.sqrt(len(cate))
@@ -1904,3 +1914,661 @@ def estimate_cate_dr_learner(
         ate_se=float(ate_se),
         model=dr
     )
+
+
+# =============================================================================
+# Improved Functions (v2) - Batch 3: Refutation and Monotonicity
+# =============================================================================
+
+class ComprehensiveRefutationResult(NamedTuple):
+    """Result of comprehensive refutation tests with multiple runs."""
+    placebo_ratio_mean: float
+    placebo_ratio_std: float
+    placebo_ratios: List[float]
+    subset_corr_mean: float
+    subset_corr_std: float
+    subset_correlations: List[float]
+    random_cause_mean: float
+    random_cause_std: float
+    random_cause_effects: List[float]
+    pass_placebo: bool
+    pass_subset: bool
+    pass_random_cause: bool
+    all_passed: bool
+    placebo_threshold: float
+    subset_threshold: float
+
+
+def comprehensive_refutation(
+    Y: np.ndarray,
+    T: np.ndarray,
+    X: np.ndarray,
+    actual_cate: np.ndarray,
+    model_factory,
+    X_predict: Optional[np.ndarray] = None,
+    n_placebo_runs: int = 10,
+    n_subset_runs: int = 5,
+    subset_fraction: float = 0.5,
+    placebo_threshold: float = 0.3,
+    subset_threshold: float = 0.6,
+    seed: int = 42
+) -> ComprehensiveRefutationResult:
+    """Comprehensive refutation tests with multiple runs for robustness.
+
+    Runs multiple iterations of placebo and subset tests to get
+    a more stable assessment of model validity.
+
+    Args:
+        Y: Outcome variable
+        T: Treatment indicator
+        X: Covariate matrix for training
+        actual_cate: CATE from actual model
+        model_factory: Factory function returning fresh model instances
+        X_predict: Covariate matrix for prediction (default: X)
+        n_placebo_runs: Number of placebo test iterations
+        n_subset_runs: Number of subset test iterations
+        subset_fraction: Fraction of data for subset test
+        placebo_threshold: Pass if mean ratio < threshold
+        subset_threshold: Pass if mean correlation > threshold
+        seed: Random seed
+
+    Returns:
+        ComprehensiveRefutationResult with aggregated test results
+    """
+    np.random.seed(seed)
+
+    if X_predict is None:
+        X_predict = X
+
+    treatment_rate = T.mean()
+    actual_cate_std = np.std(actual_cate)
+    actual_cate_mean = np.mean(actual_cate)
+
+    # Placebo tests - random treatment assignment should show no effect
+    placebo_ratios = []
+    for i in range(n_placebo_runs):
+        # Random treatment assignment (preserve dtype)
+        T_placebo = np.random.binomial(1, treatment_rate, len(T)).astype(T.dtype)
+
+        # Fit model with placebo treatment
+        model = model_factory()
+        model.fit(Y, T_placebo, X=X)
+        cate_placebo = model.effect(X_predict).flatten()
+
+        # Ratio of placebo CATE std to actual CATE std
+        ratio = np.std(cate_placebo) / actual_cate_std if actual_cate_std > 0 else np.inf
+        placebo_ratios.append(ratio)
+
+    # Subset tests - model trained on subset should correlate with full model
+    subset_correlations = []
+    n = len(Y)
+    n_subset = int(n * subset_fraction)
+
+    for i in range(n_subset_runs):
+        # Random subset
+        subset_idx = np.random.choice(n, n_subset, replace=False)
+
+        # Fit on subset
+        model = model_factory()
+        model.fit(Y[subset_idx], T[subset_idx], X=X[subset_idx])
+
+        # Predict on full X_predict
+        subset_cate = model.effect(X_predict).flatten()
+
+        # Correlation with full model CATE
+        corr = np.corrcoef(actual_cate, subset_cate)[0, 1]
+        if not np.isnan(corr):
+            subset_correlations.append(corr)
+
+    # Random cause test - adding random covariate should have no effect
+    random_cause_effects = []
+    n_random_cause_runs = n_placebo_runs  # Use same number as placebo
+    for i in range(n_random_cause_runs):
+        # Add random feature
+        X_random = np.column_stack([X, np.random.randn(len(X))])
+
+        # Fit model with random feature
+        model = model_factory()
+        model.fit(Y, T, X=X_random)
+
+        # Effect of random cause (should be ~0)
+        # Compare mean CATE with and without random feature
+        cate_with_random = model.effect(np.column_stack([X_predict, np.random.randn(len(X_predict))])).flatten()
+        effect_diff = np.mean(cate_with_random) - actual_cate_mean
+        random_cause_effects.append(effect_diff)
+
+    # Aggregate results
+    placebo_ratio_mean = np.mean(placebo_ratios)
+    placebo_ratio_std = np.std(placebo_ratios)
+    subset_corr_mean = np.mean(subset_correlations) if subset_correlations else 0
+    subset_corr_std = np.std(subset_correlations) if len(subset_correlations) > 1 else 0
+    random_cause_mean = np.mean(random_cause_effects)
+    random_cause_std = np.std(random_cause_effects) if len(random_cause_effects) > 1 else 1.0
+
+    pass_placebo = placebo_ratio_mean < placebo_threshold
+    pass_subset = subset_corr_mean > subset_threshold
+    pass_random_cause = abs(random_cause_mean) < 2 * random_cause_std
+
+    return ComprehensiveRefutationResult(
+        placebo_ratio_mean=placebo_ratio_mean,
+        placebo_ratio_std=placebo_ratio_std,
+        placebo_ratios=placebo_ratios,
+        subset_corr_mean=subset_corr_mean,
+        subset_corr_std=subset_corr_std,
+        subset_correlations=subset_correlations,
+        random_cause_mean=random_cause_mean,
+        random_cause_std=random_cause_std,
+        random_cause_effects=random_cause_effects,
+        pass_placebo=pass_placebo,
+        pass_subset=pass_subset,
+        pass_random_cause=pass_random_cause,
+        all_passed=pass_placebo and pass_subset and pass_random_cause,
+        placebo_threshold=placebo_threshold,
+        subset_threshold=subset_threshold
+    )
+
+
+def apply_monotonicity_constraints(
+    cate: np.ndarray,
+    constraint: str = 'non_negative',
+    lower_bound: float = -100,
+    upper_bound: float = 500,
+    shrink_factor: float = 0.5
+) -> np.ndarray:
+    """Apply domain-informed constraints to CATE predictions.
+
+    Useful when prior knowledge suggests treatment effects should
+    satisfy certain constraints (e.g., first campaign shouldn't hurt).
+
+    Args:
+        cate: CATE predictions
+        constraint: Type of constraint:
+            - 'non_negative': Assume treatment can only help (CATE >= 0)
+            - 'non_positive': Assume treatment can only hurt (CATE <= 0)
+            - 'bounded': Clip to [lower_bound, upper_bound]
+            - 'soft': Shrink extreme values towards bounds
+            - 'none': No constraint
+        lower_bound: Lower bound for 'bounded' and 'soft' constraints
+        upper_bound: Upper bound for 'bounded' and 'soft' constraints
+        shrink_factor: Factor for soft shrinkage (0 = clip, 1 = no change)
+
+    Returns:
+        Constrained CATE predictions
+    """
+    if constraint == 'non_negative':
+        return np.maximum(cate, 0)
+    elif constraint == 'non_positive':
+        return np.minimum(cate, 0)
+    elif constraint == 'bounded':
+        return np.clip(cate, lower_bound, upper_bound)
+    elif constraint == 'soft':
+        # Soft constraint: shrink extreme values towards bounds
+        result = cate.copy()
+        # For values below lower_bound, shrink towards lower_bound
+        below_mask = cate < lower_bound
+        if below_mask.any():
+            result[below_mask] = lower_bound + shrink_factor * (cate[below_mask] - lower_bound)
+        # For values above upper_bound, shrink towards upper_bound
+        above_mask = cate > upper_bound
+        if above_mask.any():
+            result[above_mask] = upper_bound + shrink_factor * (cate[above_mask] - upper_bound)
+        return result
+    elif constraint == 'none':
+        return cate
+    else:
+        raise ValueError(f"Unknown constraint: {constraint}")
+
+
+class OutlierFilteringResult(NamedTuple):
+    """Result of outlier filtering."""
+    cate_filtered: np.ndarray
+    outlier_mask: np.ndarray
+    n_outliers: int
+    outlier_ratio: float
+    lower_bound: float
+    upper_bound: float
+
+
+def apply_outlier_filtering(
+    cate: np.ndarray,
+    method: str = 'iqr',
+    threshold: float = 1.5,
+    percentile_bounds: Tuple[float, float] = (1, 99)
+) -> OutlierFilteringResult:
+    """Filter outlier CATE predictions.
+
+    Identifies and clips extreme CATE values that may be due to
+    extrapolation or model instability.
+
+    Args:
+        cate: CATE predictions
+        method: Detection method:
+            - 'iqr': Interquartile range (threshold is IQR multiplier)
+            - 'zscore': Z-score based (threshold is number of std devs)
+            - 'mad': Median absolute deviation (threshold is MAD multiplier)
+            - 'percentile': Percentile-based clipping
+        threshold: Detection threshold (meaning depends on method)
+        percentile_bounds: (lower, upper) percentiles for 'percentile' method
+
+    Returns:
+        OutlierFilteringResult with filtered CATE and outlier info
+    """
+    if method == 'iqr':
+        q1, q3 = np.percentile(cate, [25, 75])
+        iqr = q3 - q1
+        lower = q1 - threshold * iqr
+        upper = q3 + threshold * iqr
+    elif method == 'zscore':
+        mean = np.mean(cate)
+        std = np.std(cate)
+        lower = mean - threshold * std
+        upper = mean + threshold * std
+    elif method == 'mad':
+        median = np.median(cate)
+        mad = np.median(np.abs(cate - median))
+        # Scale factor for consistency with normal distribution
+        mad_scaled = mad * 1.4826
+        lower = median - threshold * mad_scaled
+        upper = median + threshold * mad_scaled
+    elif method == 'percentile':
+        lower, upper = np.percentile(cate, list(percentile_bounds))
+    else:
+        raise ValueError(f"Unknown method: {method}")
+
+    outlier_mask = (cate < lower) | (cate > upper)
+    filtered_cate = np.clip(cate, lower, upper)
+    n_outliers = outlier_mask.sum()
+    outlier_ratio = n_outliers / len(cate)
+
+    return OutlierFilteringResult(
+        cate_filtered=filtered_cate,
+        outlier_mask=outlier_mask,
+        n_outliers=n_outliers,
+        outlier_ratio=outlier_ratio,
+        lower_bound=lower,
+        upper_bound=upper
+    )
+
+
+class CredibilityScoreResult(NamedTuple):
+    """Result of credibility scoring."""
+    credibility_score: np.ndarray
+    overlap_score: np.ndarray
+    precision_score: np.ndarray
+    sign_stability: np.ndarray
+
+
+def compute_cate_credibility_score(
+    cate: np.ndarray,
+    ps: np.ndarray,
+    cate_std: Optional[np.ndarray] = None,
+    cate_lower: Optional[np.ndarray] = None,
+    cate_upper: Optional[np.ndarray] = None,
+    overlap_bounds: Tuple[float, float] = (0.1, 0.9),
+    model_agreement: Optional[float] = None
+) -> CredibilityScoreResult:
+    """Compute credibility score for each CATE prediction.
+
+    Higher scores indicate more reliable predictions based on:
+    - Propensity score (in overlap region)
+    - CI width (narrower = more precise)
+    - Sign stability (CI not crossing zero)
+
+    Args:
+        cate: CATE predictions
+        ps: Propensity scores
+        cate_std: Standard deviation of CATE (used if bounds not provided)
+        cate_lower: Lower CI bounds (optional, computed from cate_std)
+        cate_upper: Upper CI bounds (optional, computed from cate_std)
+        overlap_bounds: PS bounds for overlap region
+        model_agreement: Optional agreement score from ensemble
+
+    Returns:
+        CredibilityScoreResult with component scores
+    """
+    # Compute bounds from cate_std if not provided
+    if cate_lower is None or cate_upper is None:
+        if cate_std is not None:
+            cate_lower = cate - 1.96 * cate_std
+            cate_upper = cate + 1.96 * cate_std
+        else:
+            # Default: use overall std
+            std = np.std(cate)
+            cate_lower = cate - 1.96 * std
+            cate_upper = cate + 1.96 * std
+
+    # Overlap score: 1 if in overlap region, decreasing outside
+    overlap_center = (overlap_bounds[0] + overlap_bounds[1]) / 2
+    overlap_width = overlap_bounds[1] - overlap_bounds[0]
+    overlap_score = 1 - np.minimum(
+        np.abs(ps - overlap_center) / (overlap_width / 2),
+        1.0
+    )
+    overlap_score = np.maximum(overlap_score, 0)
+
+    # Precision score: inverse of CI width (normalized)
+    ci_width = cate_upper - cate_lower
+    ci_width_normalized = ci_width / (np.percentile(ci_width, 95) + 1e-6)
+    precision_score = 1 / (1 + ci_width_normalized)
+
+    # Sign stability: 1 if CI doesn't cross zero, 0 if it does
+    # Higher score if sign is more certain
+    crosses_zero = (cate_lower < 0) & (cate_upper > 0)
+    # Distance from zero normalized by CI width
+    dist_to_zero = np.minimum(np.abs(cate_lower), np.abs(cate_upper))
+    sign_stability = np.where(
+        crosses_zero,
+        0.5 * dist_to_zero / (ci_width + 1e-6),  # Partial credit if close to boundary
+        1.0
+    )
+    sign_stability = np.clip(sign_stability, 0, 1)
+
+    # Combine scores
+    if model_agreement is not None:
+        credibility = (0.35 * overlap_score + 0.35 * precision_score +
+                       0.15 * sign_stability + 0.15 * model_agreement)
+    else:
+        credibility = 0.4 * overlap_score + 0.35 * precision_score + 0.25 * sign_stability
+
+    return CredibilityScoreResult(
+        credibility_score=credibility,
+        overlap_score=overlap_score,
+        precision_score=precision_score,
+        sign_stability=sign_stability
+    )
+
+
+# =============================================================================
+# Improved Functions (v2) - Batch 4: TMLE and PS Matching
+# =============================================================================
+
+class TMLEResult(NamedTuple):
+    """Result of TMLE ATE estimation."""
+    ate: float
+    ate_se: float
+    ci_lower: float
+    ci_upper: float
+    p_value: float
+    method: str
+
+
+def estimate_ate_tmle(
+    Y: np.ndarray,
+    T: np.ndarray,
+    X: np.ndarray,
+    cv: int = 5,
+    alpha: float = 0.05
+) -> TMLEResult:
+    """Estimate ATE using Targeted Minimum Loss Estimation (TMLE).
+
+    TMLE is a doubly robust estimator with:
+    - Automatic debiasing through targeting step
+    - Finite sample bias correction
+    - Valid inference even with ML nuisance models
+
+    Uses zepid library if available, otherwise falls back to manual implementation.
+
+    Args:
+        Y: Outcome variable
+        T: Treatment indicator
+        X: Covariate matrix
+        cv: Cross-validation folds for nuisance models
+        alpha: Significance level for CI
+
+    Returns:
+        TMLEResult with ATE and inference
+    """
+    try:
+        from zepid.causal.doublyrobust import TMLE as ZepidTMLE
+
+        # Create DataFrame for zepid
+        df = pd.DataFrame(X)
+        df.columns = [f'X{i}' for i in range(X.shape[1])]
+        df['treatment'] = T
+        df['outcome'] = Y
+
+        # Fit TMLE
+        tmle = ZepidTMLE(df, exposure='treatment', outcome='outcome')
+
+        # Specify models (using all covariates)
+        covariate_formula = ' + '.join(df.columns[:-2])
+        tmle.exposure_model(covariate_formula, print_results=False)
+        tmle.outcome_model(covariate_formula, print_results=False)
+        tmle.fit()
+
+        # Extract results
+        ate = tmle.average_treatment_effect
+        ci = tmle.average_treatment_effect_ci
+        se = (ci[1] - ci[0]) / (2 * 1.96)
+
+        # Compute p-value
+        z_stat = ate / se if se > 0 else 0
+        p_value = 2 * (1 - stats.norm.cdf(abs(z_stat)))
+
+        return TMLEResult(
+            ate=float(ate),
+            ate_se=float(se),
+            ci_lower=float(ci[0]),
+            ci_upper=float(ci[1]),
+            p_value=float(p_value),
+            method='zepid'
+        )
+
+    except ImportError:
+        warnings.warn("zepid not installed. Using manual TMLE implementation.")
+        return _estimate_ate_tmle_manual(Y, T, X, cv, alpha)
+
+
+def _estimate_ate_tmle_manual(
+    Y: np.ndarray,
+    T: np.ndarray,
+    X: np.ndarray,
+    cv: int = 5,
+    alpha: float = 0.05
+) -> TMLEResult:
+    """Manual TMLE implementation without zepid.
+
+    Implements the standard TMLE algorithm:
+    1. Estimate outcome model E[Y|T, X]
+    2. Estimate propensity score P(T=1|X)
+    3. Compute clever covariate H = T/PS - (1-T)/(1-PS)
+    4. Update outcome model via logistic regression on clever covariate
+    5. Compute targeted predictions and ATE
+    """
+    from scipy import stats as scipy_stats
+
+    # Step 1: Cross-fitted propensity scores
+    ps = estimate_propensity_score_cv(X, T, cv=cv)
+    ps = np.clip(ps, 0.01, 0.99)
+
+    # Step 2: Cross-fitted outcome predictions
+    kf = KFold(n_splits=cv, shuffle=True, random_state=42)
+    Q1 = np.zeros(len(Y))  # E[Y|T=1, X]
+    Q0 = np.zeros(len(Y))  # E[Y|T=0, X]
+
+    for train_idx, test_idx in kf.split(X):
+        # Fit outcome model on training set
+        model = GradientBoostingRegressor(
+            n_estimators=100, max_depth=3, min_samples_leaf=20, random_state=42
+        )
+        model.fit(
+            np.column_stack([X[train_idx], T[train_idx]]),
+            Y[train_idx]
+        )
+
+        # Predict for T=1 and T=0
+        X_test = X[test_idx]
+        Q1[test_idx] = model.predict(np.column_stack([X_test, np.ones(len(test_idx))]))
+        Q0[test_idx] = model.predict(np.column_stack([X_test, np.zeros(len(test_idx))]))
+
+    # Step 3: Clever covariate
+    H1 = T / ps
+    H0 = -(1 - T) / (1 - ps)
+
+    # Step 4: Targeting step (update predictions)
+    # Using linear regression to find epsilon
+    Q_star = T * Q1 + (1 - T) * Q0
+
+    # Fluctuation model: logit(Q*) + epsilon * H
+    # For continuous Y, use linear regression
+    residuals = Y - Q_star
+    X_target = np.column_stack([H1 + H0])
+    epsilon = np.linalg.lstsq(X_target, residuals, rcond=None)[0][0]
+
+    # Update predictions
+    Q1_star = Q1 + epsilon / ps
+    Q0_star = Q0 - epsilon / (1 - ps)
+
+    # Step 5: Compute ATE
+    ate = np.mean(Q1_star - Q0_star)
+
+    # Influence function for variance
+    IC = (T / ps) * (Y - Q1_star) - ((1 - T) / (1 - ps)) * (Y - Q0_star) + (Q1_star - Q0_star) - ate
+    se = np.sqrt(np.var(IC) / len(Y))
+
+    # Confidence interval
+    z = scipy_stats.norm.ppf(1 - alpha / 2)
+    ci_lower = ate - z * se
+    ci_upper = ate + z * se
+
+    # P-value
+    z_stat = ate / se if se > 0 else 0
+    p_value = 2 * (1 - scipy_stats.norm.cdf(abs(z_stat)))
+
+    return TMLEResult(
+        ate=float(ate),
+        ate_se=float(se),
+        ci_lower=float(ci_lower),
+        ci_upper=float(ci_upper),
+        p_value=float(p_value),
+        method='manual'
+    )
+
+
+class PSMatchingResult(NamedTuple):
+    """Result of propensity score matching."""
+    treated_idx: np.ndarray
+    control_idx: np.ndarray
+    n_matched: int
+    match_quality: Dict[str, float]
+    ate_matched: float
+    ate_se: float
+
+
+def propensity_score_matching(
+    ps: np.ndarray,
+    T: np.ndarray,
+    Y: Optional[np.ndarray] = None,
+    X: Optional[np.ndarray] = None,
+    method: str = 'nearest',
+    caliper: float = 0.1,
+    replacement: bool = False,
+    n_neighbors: int = 1
+) -> PSMatchingResult:
+    """Propensity score matching for causal inference.
+
+    Matches treated units to control units based on propensity score
+    to create a balanced dataset for ATE estimation.
+
+    Args:
+        ps: Propensity scores
+        T: Treatment indicator
+        Y: Outcome variable (optional, for ATE estimation)
+        X: Covariates (optional, for balance checking)
+        method: 'nearest' (1:1 matching) or 'caliper' (with caliper)
+        caliper: Maximum PS distance for matching
+        replacement: Allow matching with replacement
+        n_neighbors: Number of neighbors (for k:1 matching)
+
+    Returns:
+        PSMatchingResult with matched indices and quality metrics
+    """
+    from sklearn.neighbors import NearestNeighbors
+
+    treated_idx = np.where(T == 1)[0]
+    control_idx = np.where(T == 0)[0]
+
+    ps_treated = ps[treated_idx]
+    ps_control = ps[control_idx]
+
+    # Fit nearest neighbor on control PS
+    nn = NearestNeighbors(n_neighbors=n_neighbors, metric='euclidean')
+    nn.fit(ps_control.reshape(-1, 1))
+
+    # Find nearest control for each treated
+    distances, indices = nn.kneighbors(ps_treated.reshape(-1, 1))
+    distances = distances.flatten()
+    indices = indices.flatten()
+
+    # Apply caliper
+    if method == 'caliper':
+        matched_mask = distances < caliper
+    else:
+        matched_mask = np.ones(len(treated_idx), dtype=bool)
+
+    # Get matched pairs
+    matched_treated_idx = treated_idx[matched_mask]
+    matched_control_idx = control_idx[indices[matched_mask]]
+
+    # Remove duplicates if no replacement
+    if not replacement:
+        seen_controls = set()
+        final_treated = []
+        final_control = []
+        for t, c in zip(matched_treated_idx, matched_control_idx):
+            if c not in seen_controls:
+                final_treated.append(t)
+                final_control.append(c)
+                seen_controls.add(c)
+        matched_treated_idx = np.array(final_treated)
+        matched_control_idx = np.array(final_control)
+
+    n_matched = len(matched_treated_idx)
+
+    # Match quality metrics
+    match_quality = {
+        'n_treated_original': len(treated_idx),
+        'n_control_original': len(control_idx),
+        'n_matched': n_matched,
+        'pct_matched': n_matched / len(treated_idx) if len(treated_idx) > 0 else 0,
+        'mean_ps_distance': float(distances[matched_mask].mean()) if matched_mask.sum() > 0 else np.nan
+    }
+
+    # Check covariate balance if X provided
+    if X is not None and n_matched > 0:
+        X_matched_treated = X[matched_treated_idx]
+        X_matched_control = X[matched_control_idx]
+
+        # SMD after matching
+        mean_t = X_matched_treated.mean(axis=0)
+        mean_c = X_matched_control.mean(axis=0)
+        std_pooled = np.sqrt((X_matched_treated.var(axis=0) + X_matched_control.var(axis=0)) / 2)
+        smd = np.abs(mean_t - mean_c) / (std_pooled + 1e-6)
+        match_quality['mean_smd_after'] = float(smd.mean())
+        match_quality['max_smd_after'] = float(smd.max())
+
+    # ATE on matched sample
+    if Y is not None and n_matched > 0:
+        Y_treated = Y[matched_treated_idx]
+        Y_control = Y[matched_control_idx]
+        ate_matched = Y_treated.mean() - Y_control.mean()
+        ate_se = np.sqrt(Y_treated.var() / n_matched + Y_control.var() / n_matched)
+    else:
+        ate_matched = np.nan
+        ate_se = np.nan
+
+    return PSMatchingResult(
+        treated_idx=matched_treated_idx,
+        control_idx=matched_control_idx,
+        n_matched=n_matched,
+        match_quality=match_quality,
+        ate_matched=float(ate_matched),
+        ate_se=float(ate_se)
+    )
+
+
+# Add scipy.stats import at the top level if needed
+try:
+    from scipy import stats
+except ImportError:
+    pass

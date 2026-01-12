@@ -930,3 +930,300 @@ def design_ab_test(
             f"to detect effect of ${effect_size:.2f} with {power*100:.0f}% power."
         )
     }
+
+
+# =============================================================================
+# Improved Policy Functions (v2) - Batch 3
+# =============================================================================
+
+class RiskAdjustedPolicyResult(NamedTuple):
+    """Result of risk-adjusted policy creation."""
+    policy: np.ndarray
+    cate_adjusted: np.ndarray
+    n_targeted: int
+    pct_targeted: float
+    risk_aversion: float
+    breakeven: float
+
+
+def create_risk_adjusted_policy_v2(
+    cate: np.ndarray,
+    cate_lower: np.ndarray,
+    cate_upper: np.ndarray,
+    breakeven: float,
+    risk_aversion: float = 0.5,
+    credibility_scores: Optional[np.ndarray] = None,
+    min_credibility: float = 0.0
+) -> RiskAdjustedPolicyResult:
+    """Create risk-adjusted policy using CATE bounds.
+
+    Combines point estimate with confidence interval bounds to create
+    policies that account for uncertainty in treatment effect estimates.
+
+    Args:
+        cate: CATE point estimates
+        cate_lower: CATE lower bounds (e.g., 95% CI lower)
+        cate_upper: CATE upper bounds
+        breakeven: Breakeven CATE threshold (cost / margin)
+        risk_aversion: 0 = use point estimate, 1 = use lower bound
+            - 0.0: Risk-neutral (maximize expected value)
+            - 0.5: Moderate risk aversion (blend of point and lower)
+            - 1.0: Fully conservative (only target if lower > breakeven)
+        credibility_scores: Optional per-customer credibility scores [0, 1]
+        min_credibility: Minimum credibility to be eligible for targeting
+
+    Returns:
+        RiskAdjustedPolicyResult with policy and diagnostics
+    """
+    # Certainty-equivalent CATE (risk-adjusted)
+    cate_adjusted = (1 - risk_aversion) * cate + risk_aversion * cate_lower
+
+    # Base policy: target if adjusted CATE > breakeven
+    policy = (cate_adjusted > breakeven).astype(int)
+
+    # Apply credibility filter if provided
+    if credibility_scores is not None:
+        low_credibility_mask = credibility_scores < min_credibility
+        policy[low_credibility_mask] = 0
+
+    n_targeted = policy.sum()
+    pct_targeted = n_targeted / len(policy)
+
+    return RiskAdjustedPolicyResult(
+        policy=policy,
+        cate_adjusted=cate_adjusted,
+        n_targeted=int(n_targeted),
+        pct_targeted=float(pct_targeted),
+        risk_aversion=risk_aversion,
+        breakeven=breakeven
+    )
+
+
+class PolicyTreeTuningResult(NamedTuple):
+    """Result of policy tree hyperparameter tuning."""
+    best_tree: object
+    best_params: Dict
+    best_value: float
+    all_results: pd.DataFrame
+
+
+def tune_policy_tree(
+    X: np.ndarray,
+    cate: np.ndarray,
+    Y: np.ndarray,
+    T: np.ndarray,
+    ps: np.ndarray,
+    feature_names: Optional[List[str]] = None,
+    param_grid: Optional[Dict] = None,
+    scoring: str = 'policy_value',
+    cv: int = 3,
+    random_state: int = 42
+) -> PolicyTreeTuningResult:
+    """Tune PolicyTree hyperparameters for optimal policy learning.
+
+    Searches over hyperparameter grid to find tree that maximizes
+    policy value or other metrics.
+
+    Args:
+        X: Feature matrix
+        cate: CATE predictions (target for tree)
+        Y: Outcome variable (for policy value)
+        T: Treatment indicator
+        ps: Propensity scores
+        feature_names: Feature names for interpretability
+        param_grid: Hyperparameter grid (default provided)
+        scoring: 'policy_value', 'profit', or 'accuracy'
+        cv: Number of CV folds
+        random_state: Random seed
+
+    Returns:
+        PolicyTreeTuningResult with best tree and tuning results
+    """
+    from sklearn.tree import DecisionTreeRegressor
+    from sklearn.model_selection import ParameterGrid
+
+    if param_grid is None:
+        param_grid = {
+            'max_depth': [2, 3, 4, 5],
+            'min_samples_leaf': [10, 20, 50, 100],
+            'min_samples_split': [20, 50, 100],
+        }
+
+    # Store results
+    results = []
+    best_value = -np.inf
+    best_tree = None
+    best_params = None
+
+    # Grid search
+    for params in ParameterGrid(param_grid):
+        # Fit tree on CATE predictions
+        tree = DecisionTreeRegressor(
+            random_state=random_state,
+            **params
+        )
+        tree.fit(X, cate)
+
+        # Create policy from tree predictions
+        tree_cate = tree.predict(X)
+
+        # Evaluate based on scoring method
+        if scoring == 'policy_value':
+            # IPW policy value estimate
+            # Policy: treat if predicted CATE > 0
+            policy = (tree_cate > 0).astype(int)
+
+            # IPW estimate of policy value
+            w = np.where(
+                T == policy,
+                1 / np.where(policy == 1, ps, 1 - ps),
+                0
+            )
+            value = (w * Y).sum() / (w.sum() + 1e-6)
+
+        elif scoring == 'profit':
+            # Profit-based scoring
+            policy = (tree_cate > 0).astype(int)
+            expected_profit = (policy * cate).sum()
+            value = expected_profit
+
+        elif scoring == 'accuracy':
+            # CATE prediction accuracy (correlation)
+            value = np.corrcoef(tree_cate, cate)[0, 1]
+
+        else:
+            raise ValueError(f"Unknown scoring: {scoring}")
+
+        results.append({
+            **params,
+            'value': value,
+            'n_targeted': int((tree_cate > 0).sum()),
+            'pct_targeted': float((tree_cate > 0).mean()),
+            'n_leaves': tree.get_n_leaves()
+        })
+
+        if value > best_value:
+            best_value = value
+            best_tree = tree
+            best_params = params
+
+    results_df = pd.DataFrame(results).sort_values('value', ascending=False)
+
+    return PolicyTreeTuningResult(
+        best_tree=best_tree,
+        best_params=best_params,
+        best_value=best_value,
+        all_results=results_df
+    )
+
+
+def extract_tree_rules(
+    tree: object,
+    feature_names: List[str],
+    cate: np.ndarray,
+    max_rules: int = 5
+) -> List[Dict]:
+    """Extract interpretable rules from decision tree.
+
+    Args:
+        tree: Fitted DecisionTreeRegressor
+        feature_names: Feature names
+        cate: Original CATE values for leaf statistics
+        max_rules: Maximum number of rules to return
+
+    Returns:
+        List of rule dictionaries with conditions and statistics
+    """
+    from sklearn.tree import _tree
+
+    tree_ = tree.tree_
+    rules = []
+
+    def recurse(node, path=[]):
+        if tree_.feature[node] == _tree.TREE_UNDEFINED:
+            # Leaf node
+            leaf_value = tree_.value[node][0, 0]
+            n_samples = tree_.n_node_samples[node]
+
+            rules.append({
+                'conditions': path.copy(),
+                'leaf_value': float(leaf_value),
+                'n_samples': int(n_samples),
+                'target': leaf_value > 0
+            })
+        else:
+            feature = feature_names[tree_.feature[node]]
+            threshold = tree_.threshold[node]
+
+            # Left child (<=)
+            path.append(f"{feature} <= {threshold:.2f}")
+            recurse(tree_.children_left[node], path)
+            path.pop()
+
+            # Right child (>)
+            path.append(f"{feature} > {threshold:.2f}")
+            recurse(tree_.children_right[node], path)
+            path.pop()
+
+    recurse(0)
+
+    # Sort by absolute leaf value and return top rules
+    rules.sort(key=lambda x: abs(x['leaf_value']), reverse=True)
+    return rules[:max_rules]
+
+
+def compare_policies(
+    policies: Dict[str, np.ndarray],
+    cate: np.ndarray,
+    Y: np.ndarray,
+    T: np.ndarray,
+    ps: np.ndarray,
+    cost: float,
+    margin: float
+) -> pd.DataFrame:
+    """Compare multiple policies on key metrics.
+
+    Args:
+        policies: Dict mapping policy name to policy array
+        cate: CATE predictions
+        Y: Outcome variable
+        T: Treatment indicator
+        ps: Propensity scores
+        cost: Cost per treatment
+        margin: Profit margin
+
+    Returns:
+        DataFrame comparing policies
+    """
+    results = []
+
+    for name, policy in policies.items():
+        n_targeted = policy.sum()
+        pct_targeted = n_targeted / len(policy)
+
+        # Expected profit from CATE
+        expected_revenue = (policy * cate).sum()
+        total_cost = n_targeted * cost
+        expected_profit = expected_revenue * margin - total_cost
+        roi = expected_profit / total_cost if total_cost > 0 else 0
+
+        # IPW policy value
+        w = np.where(
+            T == policy,
+            1 / np.where(policy == 1, ps + 1e-6, 1 - ps + 1e-6),
+            0
+        )
+        policy_value = (w * Y).sum() / (w.sum() + 1e-6) if w.sum() > 0 else 0
+
+        results.append({
+            'policy': name,
+            'n_targeted': int(n_targeted),
+            'pct_targeted': f"{pct_targeted:.1%}",
+            'expected_revenue': expected_revenue,
+            'total_cost': total_cost,
+            'expected_profit': expected_profit,
+            'roi': f"{roi:.1%}",
+            'policy_value_ipw': policy_value
+        })
+
+    return pd.DataFrame(results)

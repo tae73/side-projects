@@ -156,6 +156,10 @@ from .ray_utils import (
     tune_cate_model_optuna,
     tune_cate_models_optuna,
     get_best_tuned_configs_optuna,
+    # Policy Tree Tuning (Optuna)
+    get_policy_param_space_optuna,
+    tune_policy_tree_optuna,
+    tune_policy_trees_optuna,
 )
 
 from .policy import (
@@ -164,6 +168,8 @@ from .policy import (
     PolicyResult,
     PolicyValueResult,
     CVResult,
+    RiskAdjustedPolicyResult,
+    PolicyTreeTuningResult,
     # Policy Value Estimation
     estimate_policy_value_ipw,
     estimate_policy_value_dr,
@@ -172,6 +178,7 @@ from .policy import (
     create_threshold_policy,
     create_conservative_policy,
     create_risk_adjusted_policy,
+    create_risk_adjusted_policy_v2,
     create_budget_constrained_policy,
     create_segment_policy,
     # Rule Extraction
@@ -186,6 +193,8 @@ from .policy import (
     sensitivity_analysis,
     tree_depth_sensitivity,
     bootstrap_policy_ci,
+    # Tree Tuning
+    tune_policy_tree,
     # A/B Test Design
     calculate_ab_sample_size,
     design_ab_test,
