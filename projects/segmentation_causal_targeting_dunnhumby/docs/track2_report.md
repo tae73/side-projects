@@ -145,13 +145,36 @@ Propensity scores were estimated using XGBoost classifier with 5-fold cross-vali
 ### 2.6 Policy Learning
 
 **Breakeven CATE:**
-$$\text{Breakeven} = \frac{\text{Campaign Cost}}{\text{Profit Margin}} = \frac{\$12.73}{0.30} = \$42.43$$
+
+$$
+\text{Breakeven} = \frac{\text{Campaign Cost}}{\text{Profit Margin}} = \frac{\$12.73}{0.30} = \$42.43
+$$
+
+*Campaign cost: defined as the average discount amount during the campaign period*
+
 
 **Policy Types:**
 - **Threshold Policy**: Target if CATE > Breakeven
 - **Top-k Policy**: Target top k% by CATE
 - **Conservative Policy**: Target if CI lower bound > Breakeven
 - **Risk-Adjusted**: CE-CATE(λ) = (1-λ)×point + λ×lower_bound
+
+**Policy Learners:**
+
+| Method | Library | Description |
+|--------|---------|-------------|
+| **PolicyTree** | econml | Decision tree learning optimal treatment assignment from covariates X |
+| **DRPolicyTree** | econml | Policy tree using Doubly Robust loss function |
+| **Rule Tree** | scikit-learn | Interpretable classification tree predicting CATE > Breakeven |
+
+**Policy Learner vs CATE Threshold:**
+
+Policy Learners learn treatment rules directly from covariates X, while CATE Threshold uses estimated CATE values for targeting decisions.
+
+| Approach | Input | Output | Pros | Cons |
+|----------|-------|--------|------|------|
+| **CATE Threshold** | CATE estimates | CATE > BE decision | Direct use of CATE | Sensitive to CATE estimation error |
+| **Policy Learner** | Covariates X | Treatment decision | End-to-end optimization | Information loss (CATE → Binary) |
 
 ---
 
@@ -210,7 +233,7 @@ The analysis revealed **severe positivity violation**:
 
 ### 3.3 CATE Model Selection
 
-**CATE Summary Statistics (Test Set, n=486):**
+**CATE Summary Statistics (Test Set, Purchase amount, n=486):**
 
 | Model | Mean CATE | Std Dev | AUUC | Stability |
 |-------|-----------|---------|------|-----------|
@@ -223,8 +246,11 @@ The analysis revealed **severe positivity violation**:
 ![CATE Distribution](../results/figures/cate_distribution_purchase_amount.png)
 *Figure 5: CATE distributions by model. CausalForestDML shows the most stable distribution.*
 
-![Uplift Curves](../results/figures/uplift_curves_purchase_amount.png)
-*Figure 6: Uplift curves showing CausalForestDML achieves highest AUUC.*
+![Uplift Curves - Purchase Amount](../results/figures/uplift_auuc_purchase_amount.png)
+*Figure 6: AUUC for Purchase Amount - CausalForestDML achieves highest uplift.*
+
+![Uplift Curves - Purchase Count](../results/figures/uplift_auuc_purchase_count.png)
+*Figure 7: AUUC for Purchase Count - Model comparison for uplift.*
 
 **Model Selection:** **CausalForestDML** selected as primary model based on:
 - Highest AUUC (396.3)
@@ -252,7 +278,7 @@ The analysis revealed **severe positivity violation**:
 | Subset Stability | 0.561 | > 0.7 | **FAIL** |
 
 ![Refutation Tests](../results/figures/refutation_tests.png)
-*Figure 7: Refutation test results. Purchase amount model shows instability.*
+*Figure 8: Refutation test results. Purchase amount model shows instability.*
 
 **Interpretation:**
 - Purchase amount model captures some spurious correlations (placebo ratio = 0.75)
@@ -273,7 +299,7 @@ The analysis revealed **severe positivity violation**:
 | 100% | 486 | **-$4,657** | **-75%** | **Loss** |
 
 ![ROI Curves](../results/figures/roi_curves.png)
-*Figure 8: ROI curves showing optimal targeting at ~30% of customers.*
+*Figure 9: ROI curves showing optimal targeting at ~30% of customers.*
 
 **Policy Comparison:**
 
@@ -286,9 +312,63 @@ The analysis revealed **severe positivity violation**:
 | All Customers | — | 100% | -$4,657 | -75% |
 
 ![Policy Comparison](../results/figures/policy_comparison.png)
-*Figure 9: Policy performance comparison.*
+*Figure 10: Policy performance comparison.*
 
 **Key Insight:** Targeting all customers results in a $4,657 loss because negative CATE customers (VIP Heavy, Bulk Shoppers) outweigh positive effects.
+
+**Extracted Targeting Rules:**
+
+**(1) PolicyTree (econml) - Profit-based:**
+```
+|--- monetary_avg_basket_sales <= 21.29
+|   |--- frequency_per_week <= 0.71
+|   |   |--- share_fresh <= 0.07 → class: 0 (Skip)
+|   |   |--- share_fresh > 0.07
+|   |   |   |--- share_grocery <= 0.64
+|   |   |   |   |--- days_between_purchases_avg <= 14.34 → class: 0
+|   |   |   |   |--- days_between_purchases_avg > 14.34 → class: 0
+|   |   |   |--- share_grocery > 0.64 → class: 0
+|   |--- frequency_per_week > 0.71 → class: 1 (Target)
+|--- monetary_avg_basket_sales > 21.29
+|   |--- frequency <= 129.50
+|   |   |--- share_fresh <= 0.08 → class: 0
+|   |   |--- share_fresh > 0.08
+|   |   |   |--- frequency_per_week <= 0.11 → class: 0
+|   |   |   |--- frequency_per_week > 0.11
+|   |   |   |   |--- share_grocery <= 0.33 → class: 0
+|   |   |   |   |--- share_grocery > 0.33
+|   |   |   |   |   |--- purchase_regularity <= 0.20 → class: 0
+|   |   |   |   |   |--- purchase_regularity > 0.20
+|   |   |   |   |   |   |--- frequency <= 8.50 → class: 0
+|   |   |   |   |   |   |--- frequency > 8.50
+|   |   |   |   |   |   |   |--- monetary_avg_basket_sales <= 23.48 → class: 1 (Target)
+|   |   |   |   |   |   |   |--- monetary_avg_basket_sales > 23.48 → class: 0
+|   |--- frequency > 129.50 → class: 1 (Target)
+```
+
+**PolicyTree Target Paths Summary (class: 1):**
+
+| Path | Condition | Interpretation |
+|------|-----------|----------------|
+| 1 | `monetary_avg_basket_sales <= 21.29 AND frequency_per_week > 0.71` | Small basket + High frequency |
+| 2 | `monetary_avg_basket_sales > 21.29 AND frequency > 129.50` | Large basket + Very high frequency |
+| 3 | `monetary_avg_basket_sales ∈ (21.29, 23.48] AND share_fresh > 0.08 AND frequency_per_week > 0.11 AND share_grocery > 0.33 AND purchase_regularity > 0.20 AND frequency > 8.50` | Complex condition |
+
+**Policy Learner Performance Comparison:**
+
+| Policy | Target % | Profit | ROI | Characteristics |
+|--------|----------|--------|-----|-----------------|
+| CATE > Breakeven | 31.3% | $2,426 | 125% | Direct CATE use |
+| PolicyTree | 26.7% | $1,684 | 102% | X → Target learning |
+| DRPolicyTree | 68.5% | -$4,485 | -53% | Trivial solution |
+
+**Why PolicyTree Underperforms CATE Threshold:**
+1. **Information loss**: X → (CATE > BE) approximation vs direct CATE use
+2. **Approximation error**: Complex CATE distribution partitioned into rectangular regions
+3. **Targeting difference**: PolicyTree 26.7% vs CATE>BE 31.3%
+
+**DRPolicyTree Limitation:**
+DRPolicyTree uses Doubly Robust loss function, but due to positivity violation (PS AUC = 0.989), extreme IPW weights cause convergence to trivial solution (68.5% targeting, -$4,485 loss). Not usable for this dataset.
 
 ### 3.6 Segment-Level Analysis
 
@@ -305,12 +385,12 @@ The analysis revealed **severe positivity violation**:
 | **Bulk Shoppers** | 22 | **-$40** | [-$88, $8] | **Reduce** |
 
 ![CATE by Segment](../results/figures/cate_by_segment_purchase_amount.png)
-*Figure 10: CATE distribution by customer segment showing negative effects for VIP Heavy and Bulk Shoppers.*
+*Figure 11: CATE distribution by customer segment showing negative effects for VIP Heavy and Bulk Shoppers.*
 
 **Segment Analysis: Treatment Effect by Outcome**
 
 ![Segment Bubble Analysis](../results/figures/segment_bubble.png)
-*Figure 11: Segment-level analysis showing treatment effect magnitude (bubble size) and direction (color) across outcome dimensions. Purchase amount (left) shows clear positive/negative clusters; visit count (right) shows more uniform effects.*
+*Figure 12: Segment-level analysis showing treatment effect magnitude (bubble size) and direction (color) across outcome dimensions. Purchase amount (left) shows clear positive/negative clusters; visit count (right) shows more uniform effects.*
 
 The bubble chart reveals distinct segment clusters:
 - **Positive responders** (green/larger bubbles): Regular+H&B, Active Loyalists, Light Grocery show consistent positive effects across both purchase amount and visit count
@@ -505,8 +585,6 @@ This section provides comprehensive targeting recommendations for each customer 
 ---
 
 #### A.6.1 Segment Performance Matrix
-
-![Segment CATE Barplot](../results/figures/segment_cate_barplot.png)
 
 | Segment | Mean CATE | Current Targeting | Recommended | Gap Analysis |
 |---------|-----------|-------------------|-------------|--------------|

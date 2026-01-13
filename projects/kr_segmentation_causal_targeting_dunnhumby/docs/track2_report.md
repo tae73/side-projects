@@ -1,14 +1,14 @@
-ㅁㅁ# Heterogeneous Treatment Effects를 활용한 Causal Targeting: 리테일 캠페인 최적화 사례 연구
+# Heterogeneous Treatment Effects를 활용한 Causal Targeting: 리테일 캠페인 최적화 사례 연구
 
 ## 요약
 
-본 연구는 리테일 마케팅 캠페인의 Heterogeneous Treatment Effects (HTE)를 추정하고 최적 타겟팅 정책을 도출하기 위해 Causal Inference 방법론을 적용한다. Dunnhumby "The Complete Journey" 데이터셋을 활용하여, Clean Causal Identification 설계 하에 첫 번째 TypeA 캠페인 노출을 기준으로 2,430명의 고객 (Treatment 1,511명, Control 919명)을 분석하였다.
+본 분석은 리테일 마케팅 캠페인의 Heterogeneous Treatment Effects (HTE)를 추정하고 최적 타겟팅 정책을 도출하기 위해 Causal Inference 방법론을 적용한다. Dunnhumby "The Complete Journey" 데이터셋을 활용하여, Clean Causal Identification 설계 하에 첫 번째 TypeA 캠페인 노출을 기준으로 2,430명의 고객 (Treatment 1,511명, Control 919명)을 분석하였다.
 
 **주요 결과:**
-- **심각한 Positivity Violation** (PS AUC = 0.989)이 Causal Identification을 17% Overlap 영역으로 제한
+- **Positivity Violation** (PS AUC = 0.989)이 Causal Identification을 17% Overlap 영역으로 제한
 - **Average Treatment Effect (ATE)**: Trimmed 샘플에서 고객당 $20-40
-- **최적 타겟팅**: 고객의 31.3% 타겟팅 시 $2,426 수익 (125% ROI)
-- **반직관적 인사이트**: VIP Heavy와 Bulk Shoppers가 음의 CATE를 보여 과다 타겟팅 시사
+- **Optimal Targeting**: 고객의 31.3% 타겟팅 시 $2,426 수익 (125% ROI)
+- **반직관적 인사이트**: VIP Heavy와 Bulk Shoppers (고가치 고객) 가 음의 CATE를 보여 과다 타겟팅 시사
 - **전체 고객 타겟팅 시 $4,657 손실** 발생 (Negative Responder로 인함)
 
 **권고사항:**
@@ -22,7 +22,7 @@
 
 ### 1.1 배경
 
-마케팅 캠페인의 효과는 고객마다 다르다. Average Treatment Effect는 모집단 수준의 인사이트를 제공하지만, 타겟팅 의사결정에 활용할 수 있는 중요한 이질성을 감춘다. 이미 Heavy Purchaser인 고객은 Light Shopper와 다르게 캠페인에 반응할 수 있다. 이러한 이질성을 이해하면 마케팅 투자 수익률을 극대화하는 Precision Targeting이 가능해진다.
+마케팅 캠페인의 효과는 고객마다 다르다. Average Treatment Effect는 모집단 수준의 인사이트를 제공하지만, 타겟팅 의사결정에 활용할 수 있는 중요한 이질성을 분석할 수 없다. 이미 Heavy Purchaser인 고객은 Light Shopper와 다르게 캠페인에 반응할 수 있다. 이러한 이질성을 이해하면 마케팅 투자 수익률을 극대화하는 Precision Targeting이 가능해진다.
 
 ### 1.2 문제 정의
 
@@ -145,13 +145,35 @@ XGBoost Classifier로 5-Fold Cross-Validation을 통해 Propensity Score를 추�
 ### 2.6 Policy Learning
 
 **Breakeven CATE:**
-$$\text{Breakeven} = \frac{\text{Campaign Cost}}{\text{Profit Margin}} = \frac{\$12.73}{0.30} = \$42.43$$
+
+$$
+\text{Breakeven} = \frac{\text{Campaign Cost}}{\text{Profit Margin}} = \frac{\$12.73}{0.30} = \$42.43
+$$
+
+*Campaign cost: 캠페인 기간 동안의 평균 할인액으로 정의* 
 
 **Policy 유형:**
 - **Threshold Policy**: CATE > Breakeven이면 타겟팅
 - **Top-k Policy**: CATE 기준 상위 k% 타겟팅
 - **Conservative Policy**: CI Lower Bound > Breakeven이면 타겟팅
 - **Risk-Adjusted**: CE-CATE(λ) = (1-λ)×Point + λ×Lower_bound
+
+**Policy Learner:**
+
+| 방법 | 라이브러리 | 설명 |
+|------|-----------|------|
+| **PolicyTree** | econml | Covariates X로부터 최적 Treatment 할당을 학습하는 의사결정 트리 |
+| **DRPolicyTree** | econml | Doubly Robust 손실 함수를 사용한 Policy Tree |
+| **Rule Tree** | scikit-learn | CATE > Breakeven을 타겟으로 학습한 해석 가능한 분류 트리 |
+
+**Policy Learner vs CATE Threshold 비교:**
+
+Policy Learner는 Covariates X로부터 직접 Treatment 규칙을 학습하는 반면, CATE Threshold는 추정된 CATE를 기준으로 타겟팅을 결정한다.
+
+| 접근법 | 입력 | 출력 | 장점 | 단점 |
+|--------|------|------|------|------|
+| **CATE Threshold** | CATE 추정치 | CATE > BE 여부 | CATE 정보 직접 활용 | CATE 추정 오차에 민감 |
+| **Policy Learner** | Covariates X | Treatment 여부 | End-to-end 최적화 | 정보 손실 (CATE → Binary) |
 
 ---
 
@@ -210,7 +232,7 @@ $$\text{Breakeven} = \frac{\text{Campaign Cost}}{\text{Profit Margin}} = \frac{\
 
 ### 3.3 CATE 모델 선택
 
-**CATE 요약 통계 (Test Set, n=486):**
+**CATE 요약 통계 (Test Set, Purchase amount, n=486):**
 
 | 모델 | 평균 CATE | 표준편차 | AUUC | 안정성 |
 |------|-----------|----------|------|--------|
@@ -223,8 +245,11 @@ $$\text{Breakeven} = \frac{\text{Campaign Cost}}{\text{Profit Margin}} = \frac{\
 ![CATE Distribution](../results/figures/cate_distribution_purchase_amount.png)
 *Figure 5: 모델별 CATE 분포. CausalForestDML이 가장 안정적인 분포를 보임.*
 
-![Uplift Curves](../results/figures/uplift_curves_purchase_amount.png)
-*Figure 6: CausalForestDML이 최고 AUUC를 달성하는 Uplift Curves.*
+![Uplift Curves - Purchase Amount](../results/figures/uplift_auuc_purchase_amount.png)
+*Figure 6: Purchase Amount 기준 AUUC - CausalForestDML이 최고 Uplift 달성.*
+
+![Uplift Curves - Purchase Count](../results/figures/uplift_auuc_purchase_count.png)
+*Figure 7: Purchase Count 기준 AUUC - 모델별 Uplift 비교.*
 
 **모델 선택:** 다음을 기반으로 **CausalForestDML**을 Primary 모델로 선정:
 - 최고 AUUC (396.3)
@@ -252,7 +277,7 @@ $$\text{Breakeven} = \frac{\text{Campaign Cost}}{\text{Profit Margin}} = \frac{\
 | Subset Stability | 0.561 | > 0.7 | **실패** |
 
 ![Refutation Tests](../results/figures/refutation_tests.png)
-*Figure 7: Refutation Test 결과. Purchase Amount 모델이 불안정성을 보임.*
+*Figure 8: Refutation Test 결과. Purchase Amount 모델이 불안정성을 보임.*
 
 **해석:**
 - Purchase Amount 모델이 일부 Spurious Correlation을 포착 (Placebo Ratio = 0.75)
@@ -273,7 +298,7 @@ $$\text{Breakeven} = \frac{\text{Campaign Cost}}{\text{Profit Margin}} = \frac{\
 | 100% | 486 | **-$4,657** | **-75%** | **손실** |
 
 ![ROI Curves](../results/figures/roi_curves.png)
-*Figure 8: 고객의 약 30%에서 최적 타겟팅을 보여주는 ROI Curves.*
+*Figure 9: 고객의 약 30%에서 최적 타겟팅을 보여주는 ROI Curves.*
 
 **Policy 비교:**
 
@@ -289,6 +314,60 @@ $$\text{Breakeven} = \frac{\text{Campaign Cost}}{\text{Profit Margin}} = \frac{\
 *Figure 9: Policy 성과 비교.*
 
 **핵심 인사이트:** 전체 고객 타겟팅은 음의 CATE 고객 (VIP Heavy, Bulk Shoppers)이 양의 효과를 상쇄하여 $4,657 손실을 초래한다.
+
+**추출된 타겟팅 규칙:**
+
+**(1) PolicyTree (econml) - Profit 기반:**
+```
+|--- monetary_avg_basket_sales <= 21.29
+|   |--- frequency_per_week <= 0.71
+|   |   |--- share_fresh <= 0.07 → class: 0 (Skip)
+|   |   |--- share_fresh > 0.07
+|   |   |   |--- share_grocery <= 0.64
+|   |   |   |   |--- days_between_purchases_avg <= 14.34 → class: 0
+|   |   |   |   |--- days_between_purchases_avg > 14.34 → class: 0
+|   |   |   |--- share_grocery > 0.64 → class: 0
+|   |--- frequency_per_week > 0.71 → class: 1 (Target)
+|--- monetary_avg_basket_sales > 21.29
+|   |--- frequency <= 129.50
+|   |   |--- share_fresh <= 0.08 → class: 0
+|   |   |--- share_fresh > 0.08
+|   |   |   |--- frequency_per_week <= 0.11 → class: 0
+|   |   |   |--- frequency_per_week > 0.11
+|   |   |   |   |--- share_grocery <= 0.33 → class: 0
+|   |   |   |   |--- share_grocery > 0.33
+|   |   |   |   |   |--- purchase_regularity <= 0.20 → class: 0
+|   |   |   |   |   |--- purchase_regularity > 0.20
+|   |   |   |   |   |   |--- frequency <= 8.50 → class: 0
+|   |   |   |   |   |   |--- frequency > 8.50
+|   |   |   |   |   |   |   |--- monetary_avg_basket_sales <= 23.48 → class: 1 (Target)
+|   |   |   |   |   |   |   |--- monetary_avg_basket_sales > 23.48 → class: 0
+|   |--- frequency > 129.50 → class: 1 (Target)
+```
+
+**PolicyTree Target 경로 요약 (class: 1):**
+
+| 경로 | 조건 | 해석 |
+|------|------|------|
+| 1 | `monetary_avg_basket_sales <= 21.29 AND frequency_per_week > 0.71` | 소장바구니 + 고빈도 |
+| 2 | `monetary_avg_basket_sales > 21.29 AND frequency > 129.50` | 고장바구니 + 초고빈도 |
+| 3 | `monetary_avg_basket_sales ∈ (21.29, 23.48] AND share_fresh > 0.08 AND frequency_per_week > 0.11 AND share_grocery > 0.33 AND purchase_regularity > 0.20 AND frequency > 8.50` | 복합 조건 |
+
+**Policy Learner 성과 비교:**
+
+| Policy | Target % | Profit | ROI | 특징 |
+|--------|----------|--------|-----|------|
+| CATE > Breakeven | 31.3% | $2,426 | 125% | 개별 CATE 직접 사용 |
+| PolicyTree | 26.7% | $1,684 | 102% | X → Target 학습 |
+| DRPolicyTree | 68.5% | -$4,485 | -53% | Trivial Solution |
+
+**PolicyTree가 CATE Threshold보다 성과가 낮은 이유:**
+1. **정보 손실**: X → (CATE > BE) 근사 vs CATE 직접 사용
+2. **근사 오차**: 복잡한 CATE 분포를 사각형 영역으로 분할
+3. **타겟팅 차이**: PolicyTree 26.7% vs CATE>BE 31.3%
+
+**DRPolicyTree 한계:**
+DRPolicyTree는 Doubly Robust 손실 함수를 사용하나, Positivity Violation (PS AUC = 0.989)으로 인해 극단적 IPW 가중치가 발생하여 Trivial Solution (68.5% 타겟팅, -$4,485 손실)으로 수렴한다. 본 데이터셋에는 사용 불가.
 
 ### 3.6 세그먼트별 분석
 
@@ -505,8 +584,6 @@ CATE 추정이 어디서 신뢰할 수 있는지 이해하는 것은 타겟팅 �
 ---
 
 #### A.6.1 세그먼트 성과 매트릭스
-
-![Segment CATE Barplot](../results/figures/segment_cate_barplot.png)
 
 | 세그먼트 | 평균 CATE | 현재 타겟팅 | 권장 | Gap 분석 |
 |----------|-----------|-------------|------|----------|
