@@ -2,12 +2,12 @@
 
 ## Executive Summary
 
-본 프로젝트는 Dunnhumby "The Complete Journey" 리테일 데이터셋을 활용하여 고객 분석을 위한 **2-Track Framework**를 구현한다. 기술적 세분화와 인과 추론을 결합하여 두 가지 핵심 마케팅 질문에 답한다:
+본 프로젝트는 Dunnhumby "The Complete Journey" 리테일 데이터셋을 활용하여 고객 분석을 위한 **2-Track Framework**를 구현하였다. 고객 세그멘테이션과 인과 추론을 결합하여 두 가지 핵심 마케팅 문제에 접근했다:
 
-- **Track 1**: "우리 고객은 누구인가?" → 7개의 고유한 고객 세그먼트
-- **Track 2**: "누구를 타겟팅해야 하는가?" → 125% ROI 개선을 위한 최적 31.3% 타겟팅
+- **Track 1** (Factor modeling / Clustering): "우리 고객은 누구인가?" → 7개의 고유한 고객 세그먼트
+- **Track 2** (Causal inference, HTE, optimal policy): "누구를 타겟팅해야 하는가?" → 125% ROI 개선을 위한 최적 31.3% 타겟팅
 
-### 주요 결과
+### Key Results
 
 | Track | 핵심 발견 | 비즈니스 임팩트 |
 |-------|----------|-----------------|
@@ -19,7 +19,7 @@
 
 ## 연구 동기
 
-전통적인 마케팅 세분화는 "우리 고객은 누구인가"에는 답하지만 "이 캠페인이 그들에게 효과가 있을까?"에는 답하지 못한다. 본 프로젝트는 이 갭을 연결한다:
+본 프로젝트에서는 전통적인 세그멘테이션의 "우리 고객은 누구인가?"의 질문과 인과추론 기반의 "이 캠페인이 누구에게 얼마나 효과가 있을까?"의 문제에 대한 접근이다.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -29,26 +29,26 @@
 │  TRACK 1: CUSTOMER UNDERSTANDING                                            │
 │  ════════════════════════════════                                           │
 │                                                                             │
-│  "우리 고객은 누구인가?"                                                     │
+│  "우리 고객은 누구인가?"                                                         │
 │                                                                             │
-│  • Latent Factor Modeling (NMF)   → 행동 차원 발견                           │
-│  • Clustering (K-Means)           → 실행 가능한 세그먼트 도출                 │
-│  • Stability Validation           → 세그먼트 신뢰성 보장                      │
+│  • Latent Factor Modeling (NMF)   → 행동 차원 발견                             │
+│  • Clustering (K-Means)           → 실행 가능한 세그먼트 도출                     │
+│  • Stability Validation           → 세그먼트 신뢰성 보장                         │
 │                                                                             │
-│  Output: 마케팅 전략을 위한 고객 프로필                                        │
+│  Output: 마케팅 전략을 위한 고객 프로필                                            │
 │                                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  TRACK 2: CAUSAL TARGETING                                                  │
 │  ═════════════════════════                                                  │
 │                                                                             │
-│  "누구를 타겟팅해야 하는가?"                                                  │
+│  "누구를 타겟팅해야 하는가?"                                                      │
 │                                                                             │
-│  • Heterogeneous Treatment Effects → 고객별 캠페인 효과                       │
-│  • Policy Learning                 → 최적 타겟팅 규칙                         │
-│  • ROI Optimization                → 캠페인 수익 극대화                        │
+│  • Heterogeneous Treatment Effects → 고객별 캠페인 효과                         │
+│  • Policy Learning                 → 최적 타겟팅 규칙                           │
+│  • ROI Optimization                → 캠페인 수익 극대화                         │
 │                                                                             │
-│  Output: 데이터 기반 타겟팅 정책                                              │
+│  Output: 데이터 기반 타겟팅 정책                                                 │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -117,7 +117,7 @@
 
 3. **CATE Estimation**: 다양한 Meta-learner
    - S-Learner, T-Learner, X-Learner
-   - LinearDML, CausalForestDML
+   - (R-Learner, DML) LinearDML, CausalForestDML
    - AUUC 기반 모델 선택 (CausalForestDML: 396.3)
 
 4. **Policy Learning**: 최적 타겟팅 규칙
