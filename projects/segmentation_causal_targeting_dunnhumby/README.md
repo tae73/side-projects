@@ -211,7 +211,7 @@ Each report includes: Summary, Introduction, Methods, Results, Discussion, and A
 - **Data Processing**: pandas, numpy
 - **Machine Learning**: scikit-learn, xgboost
 - **Causal Inference**: econml, dowhy
-- **Optimization**: Optuna (hyperparameter tuning)
+- **Optimization**: Optuna (hyperparameter tuning), Ray
 - **Visualization**: matplotlib, seaborn
 
 ---

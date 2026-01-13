@@ -17,7 +17,7 @@
 
 ---
 
-## 연구 동기
+## Motivation
 
 본 프로젝트에서는 전통적인 세그멘테이션의 "우리 고객은 누구인가?"의 질문과 인과추론 기반의 "이 캠페인이 누구에게 얼마나 효과가 있을까?"의 문제에 대한 접근이다.
 
@@ -64,7 +64,7 @@
 
 ---
 
-## 방법론
+## Methodology
 
 ### Track 1: Customer Segmentation
 
@@ -135,7 +135,7 @@
 | Optimal Targeting | 31.3% 고객 |
 | Expected Profit | $2,426 (125% ROI) |
 
-**세그먼트별 권고**:
+**세그먼트별 전략 / 권고**:
 
 | 세그먼트 | Mean CATE | 액션 |
 |----------|-----------|------|
@@ -157,7 +157,7 @@
 
 ---
 
-## 프로젝트 구조
+## Project Structure
 
 ```
 projects/kr_segmentation_causal_targeting_dunnhumby/
@@ -171,7 +171,7 @@ projects/kr_segmentation_causal_targeting_dunnhumby/
 
 ---
 
-## 노트북
+## Notebooks
 
 ### Track 1: Customer Segmentation
 
@@ -191,7 +191,7 @@ projects/kr_segmentation_causal_targeting_dunnhumby/
 
 ---
 
-## 기술 보고서
+## Technical Reports
 
 자세한 방법론, 결과, 비즈니스 해석은 다음을 참조한다:
 
@@ -205,17 +205,17 @@ projects/kr_segmentation_causal_targeting_dunnhumby/
 
 ---
 
-## 기술 스택
+## Technical Stack
 
 - **Data Processing**: pandas, numpy
 - **Machine Learning**: scikit-learn, xgboost
 - **Causal Inference**: econml, dowhy
-- **Optimization**: Optuna (hyperparameter tuning)
+- **Optimization**: Optuna (hyperparameter tuning), Ray
 - **Visualization**: matplotlib, seaborn
 
 ---
 
-## 데이터 소스
+## Data Source
 
 **Dunnhumby "The Complete Journey"**
 - 102주간 2,500 가구
@@ -227,7 +227,7 @@ projects/kr_segmentation_causal_targeting_dunnhumby/
 
 ---
 
-## 한계점 및 향후 과제
+## Limitations & Future Work
 
 1. **Positivity Violation**: PS AUC = 0.989는 83%의 CATE 추정치가 외삽임을 의미
 2. **Refutation Tests**: Placebo Treatment 및 Subset Stability 테스트 실패
