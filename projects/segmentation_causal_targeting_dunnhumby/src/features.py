@@ -652,12 +652,12 @@ def build_scenario1_features(df_trans, df_product, df_causal,
         - No pre-treatment contamination from previous campaigns
     """
     if first_campaign_only:
-        from projects.segmentation_dunnhumby.src.cohorts import build_scenario1_first_campaign_cohort
+        from projects.segmentation_causal_targeting_dunnhumby.src.cohorts import build_scenario1_first_campaign_cohort
         cohort = build_scenario1_first_campaign_cohort(
             df_trans, df_campaign_table, df_campaign_desc, post_window
         )
     else:
-        from projects.segmentation_dunnhumby.src.cohorts import build_scenario1_cohort
+        from projects.segmentation_causal_targeting_dunnhumby.src.cohorts import build_scenario1_cohort
         # Get campaign periods
         campaign_periods = get_campaign_periods(df_campaign_desc, 'TypeA', post_window)
         # Build base cohort (customer × campaign with treatment indicator)
@@ -780,7 +780,7 @@ def build_scenario2_features(df_trans, df_product, df_causal,
         - Outcome features (from campaign + post period)
         - Demographic features
     """
-    from projects.segmentation_dunnhumby.src.cohorts import build_scenario2_first_campaign_cohort
+    from projects.segmentation_causal_targeting_dunnhumby.src.cohorts import build_scenario2_first_campaign_cohort
 
     # 1. Build cohort
     cohort = build_scenario2_first_campaign_cohort(

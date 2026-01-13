@@ -139,7 +139,7 @@ def build_scenario1_first_campaign_cohort(
         - pre_end_week, outcome_start_week, outcome_end_week
     """
     # Import get_campaign_periods from features module
-    from projects.segmentation_dunnhumby.src.features import get_campaign_periods
+    from projects.segmentation_causal_targeting_dunnhumby.src.features import get_campaign_periods
 
     # 1. Get TypeA campaign periods
     campaign_periods = get_campaign_periods(df_campaign_desc, 'TypeA', post_window)
@@ -242,7 +242,7 @@ def build_scenario2_first_campaign_cohort(
         - pre_end_week, outcome_start_week, outcome_end_week
     """
     # Import get_campaign_periods_all_types from features module
-    from projects.segmentation_dunnhumby.src.features import get_campaign_periods_all_types
+    from projects.segmentation_causal_targeting_dunnhumby.src.features import get_campaign_periods_all_types
 
     # 1. Get ALL campaign periods (no type filter)
     campaign_periods = get_campaign_periods_all_types(df_campaign_desc, post_window)

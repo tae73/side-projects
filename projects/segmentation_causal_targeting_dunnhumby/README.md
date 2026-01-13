@@ -1,4 +1,4 @@
-# Customer Segmentation - Dunnhumby
+# Customer Segmentation & Causal Targeting- Dunnhumby
 
 ## Overview
 
@@ -12,7 +12,7 @@ Customer segmentation research using the Dunnhumby "The Complete Journey" datase
 ## Project Structure
 
 ```
-projects/segmentation_dunnhumby/
+projects/segmentation_causal_targeting_dunnhumby/
 ├── experiments/     # Experiment designs and configurations
 ├── notebook/        # Analysis notebooks
 │   ├── 00_study_design.ipynb       # Study design documentation
