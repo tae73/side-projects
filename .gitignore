@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (large files)
+*.csv
+*.parquet
+*.pkl
+*.h5
+*.hdf5
+
+# Keep raw data tracked
+!data/*/raw/*.csv
+
+# Credentials
+.env
+*.env
+credentials.json
+secrets.yaml
+
+# Logs
+*.log
+logs/
+
+# Model artifacts
+*.pt
+*.pth
+*.ckpt
+*.model
