@@ -1,8 +1,8 @@
-# Latent Factor Modeling을 활용한 고객 세분화: 리테일 분석 사례 연구
+# Latent Factor Modeling을 활용한 고객 세그멘테이션: 리테일 분석 사례 연구
 
 ## 요약
 
-본 연구는 Dunnhumby "The Complete Journey" 데이터셋의 리테일 거래 데이터를 활용하여 행동 기반 고객 세분화 프레임워크를 제시한다. Non-negative Matrix Factorization (NMF)과 K-Means Clustering을 결합하여 102주 관측 기간 동안 2,500 가구로부터 7개의 고객 세그먼트를 도출하였다.
+본 분석은 Dunnhumby "The Complete Journey" 데이터셋의 리테일 거래 데이터를 활용하여 행동 기반 고객 세그멘테이션 프레임워크를 제시한다. Non-negative Matrix Factorization (NMF)과 K-Means Clustering을 결합하여 102주 관측 기간 동안 2,500 가구로부터 7개의 고객 세그먼트를 도출하였다.
 
 **주요 결과:**
 - 5개의 해석 가능한 Latent Factor가 고객 행동 분산의 92.44%를 설명
@@ -11,7 +11,7 @@
 - 고가치 고객군 (44.8%)이 전체 매출의 약 70% 기여
 - 각 세그먼트별 명확한 마케팅 전략 도출
 
-본 세분화는 개인화 마케팅 전략의 기반을 제공하며, 후속 Causal Targeting 분석 (Track 2)의 입력으로 활용된다.
+본 세그멘테이션은 개인화 마케팅 전략의 기반을 제공하며, 후속 Causal Targeting 분석 (Track 2)의 입력으로 활용된다.
 
 ---
 
@@ -41,13 +41,13 @@
 1. 고객 쇼핑 패턴을 특징짓는 **Latent Behavioral Factor 추출**
 2. 실행 가능한 마케팅 시사점을 제공하는 **고유한 고객 세그먼트 식별**
 3. Bootstrap Resampling을 통한 **세그먼트 안정성 검증**
-4. **세그먼트별 마케팅 권고안 개발**
+4. **세그먼트별 마케팅 전략 / 권고안 개발**
 
 ### 1.4 분석 프레임워크
 
 본 분석은 2-Track 연구 프레임워크의 일부이다:
 
-- **Track 1 (본 리포트)**: 기술적 세분화를 통한 Customer Understanding
+- **Track 1 (본 리포트)**: 세그멘테이션을 통한 Customer Understanding
 - **Track 2 (별도)**: Heterogeneous Treatment Effect 추정을 통한 Causal Targeting
 
 Track 1 세그먼트는 Track 2 Causal 분석의 Moderator로 활용되어 세그먼트별 캠페인 최적화를 가능하게 한다.
@@ -58,7 +58,7 @@ Track 1 세그먼트는 Track 2 Causal 분석의 Moderator로 활용되어 세�
 
 ### 2.1 Feature Engineering
 
-거래 데이터로부터 33개의 고객 수준 Feature를 구성하여 6개의 개념적 그룹으로 조직화하였다:
+거래 데이터로부터 33개의 고객 수준 Feature를 구성하여 6개의 개념적 그룹으로 구성하였다:
 
 | 그룹 | 개수 | 설명 | 예시 |
 |------|------|------|------|
@@ -121,7 +121,7 @@ Bootstrap Resampling을 수행하여 세그먼트 안정성을 평가하였다:
 
 ### 3.1 Latent Factor 해석
 
-NMF는 고객 행동의 서로 다른 측면을 나타내는 5개의 해석 가능한 Latent Factor를 식별하였다:
+NMF를 통해 고객 행동의 서로 다른 측면을 나타내는 5개의 해석 가능한 Latent Factor를 식별하였다:
 
 | Factor | 명칭 | 상위 Feature (Loading) | 해석 |
 |--------|------|----------------------|------|
@@ -254,7 +254,7 @@ Factor들은 **Value** (빈도, 금액)와 **Need** (카테고리 선호) 차원
 **4. 카테고리 전문가**
 Fresh Lovers (13.6%)와 H&B 집중 세그먼트는 카테고리 전문화를 보여주며, 카테고리별 마케팅 접근 기회를 시사한다.
 
-### 4.2 마케팅 권고안
+### 4.2 마케팅 전략 / 권고안
 
 | 세그먼트 | 우선순위 | 전략 | 주요 액션 |
 |----------|----------|------|----------|
