@@ -93,6 +93,14 @@
 | Bootstrap ARI | 0.617 |
 | Davies-Bouldin Index | 0.90 |
 
+**주요 시각화:**
+
+![NMF Factor Loadings](results/figures/factor_loadings_heatmap.png)
+*33개 고객 Feature에서 추출된 5개 행동 차원의 NMF Factor Loadings*
+
+![Segment Analysis](results/figures/bubble_a_loyal_vs_deal.png)
+*Loyalty (구매 빈도)와 Deal Sensitivity (할인 사용률) 기준 고객 세그먼트 포지셔닝*
+
 ### Track 2: Causal Targeting
 
 **접근법**: Heterogeneous Treatment Effects + Policy Learning
@@ -135,6 +143,17 @@
 | Active Loyalists | +$33 | 타겟팅 유지 |
 | VIP Heavy | -$38 | **타겟팅 축소** |
 | Bulk Shoppers | -$40 | **타겟팅 축소** |
+
+**주요 시각화:**
+
+![Uplift Curves](results/figures/uplift_auuc_purchase_amount.png)
+*CATE 모델별 AUUC 비교 - CausalForestDML이 최고 Uplift 달성*
+
+![Segment CATE](results/figures/segment_bubble.png)
+*세그먼트 및 Outcome 차원별 Treatment Effect*
+
+![ROI Optimization](results/figures/roi_curves.png)
+*타겟팅 비율별 ROI - 31.3%에서 최적*
 
 ---
 

@@ -93,6 +93,14 @@ Traditional marketing segmentation answers "who are our customers" but fails to 
 | Bootstrap ARI | 0.617 |
 | Davies-Bouldin Index | 0.90 |
 
+**Key Visualizations:**
+
+![NMF Factor Loadings](results/figures/factor_loadings_heatmap.png)
+*NMF factor loadings showing 5 behavioral dimensions extracted from 33 customer features*
+
+![Segment Analysis](results/figures/bubble_a_loyal_vs_deal.png)
+*Customer segments positioned by loyalty (frequency) and deal sensitivity (discount usage)*
+
 ### Track 2: Causal Targeting
 
 **Approach**: Heterogeneous Treatment Effects + Policy Learning
@@ -136,6 +144,17 @@ Traditional marketing segmentation answers "who are our customers" but fails to 
 | VIP Heavy | -$38 | **Reduce Targeting** |
 | Bulk Shoppers | -$40 | **Reduce Targeting** |
 
+**Key Visualizations:**
+
+![Uplift Curves](results/figures/uplift_auuc_purchase_amount.png)
+*AUUC comparison across CATE models - CausalForestDML achieves highest uplift*
+
+![Segment CATE](results/figures/segment_bubble.png)
+*Treatment effect by segment and outcome dimension*
+
+![ROI Optimization](results/figures/roi_curves.png)
+*ROI by targeting percentage showing optimal at 31.3%*
+
 ---
 
 ## Project Structure
@@ -176,11 +195,12 @@ projects/segmentation_causal_targeting_dunnhumby/
 
 For detailed methodology, results, and business interpretations:
 
-- **[Track 1 Report](docs/track1_report.md)**: Customer Segmentation Analysis
-  - NMF factor interpretation, segment profiles, marketing actions by segment
-
-- **[Track 2 Report](docs/track2_report.md)**: Causal Targeting Analysis
-  - Positivity diagnostics, CATE estimation, policy comparison, A/B test design
+| Report | Language | Description |
+|--------|----------|-------------|
+| [Track 1 Report](docs/track1_report.md) | English | Customer Segmentation Analysis |
+| [Track 1 Report (KO)](docs/track1_report_ko.md) | 한국어 | 고객 세분화 분석 |
+| [Track 2 Report](docs/track2_report.md) | English | Causal Targeting Analysis |
+| [Track 2 Report (KO)](docs/track2_report_ko.md) | 한국어 | Causal Targeting 분석 |
 
 Each report includes: Summary, Introduction, Methods, Results, Discussion, and Appendix with detailed marketing interpretations.
 

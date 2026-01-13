@@ -307,6 +307,16 @@ $$\text{Breakeven} = \frac{\text{Campaign Cost}}{\text{Profit Margin}} = \frac{\
 ![CATE by Segment](../results/figures/cate_by_segment_purchase_amount.png)
 *Figure 10: VIP Heavy와 Bulk Shoppers의 음의 효과를 보여주는 고객 세그먼트별 CATE 분포.*
 
+**세그먼트 분석: Outcome별 Treatment Effect**
+
+![Segment Bubble Analysis](../results/figures/segment_bubble.png)
+*Figure 11: Outcome 차원별 Treatment Effect 크기(버블 크기)와 방향(색상)을 보여주는 세그먼트 수준 분석. Purchase Amount(좌)는 명확한 양/음 클러스터를 보이고, Visit Count(우)는 더 균일한 효과를 보임.*
+
+버블 차트는 뚜렷한 세그먼트 클러스터를 보여준다:
+- **Positive Responders** (녹색/큰 버블): Regular+H&B, Active Loyalists, Light Grocery가 Purchase Amount와 Visit Count 모두에서 일관된 양의 효과
+- **Negative Responders** (빨간 버블): VIP Heavy와 Bulk Shoppers가 주로 Purchase Amount에서 음의 Treatment Effect
+- **효과 크기**: Treatment Effect가 Visit Count보다 Purchase Amount에서 더 뚜렷하여, 캠페인 영향이 행동적이기보다 금전적임을 시사
+
 **VIP Heavy와 Bulk Shoppers의 음의 CATE 이유:**
 - **VIP Heavy**: 이미 High Purchaser로 캠페인 유발 Uplift 여지가 적음; Cannibalization 발생 가능
 - **Bulk Shoppers**: 쿠폰 기반 TypeA 프로모션에 반응이 좋지 않은 가격 민감 고객

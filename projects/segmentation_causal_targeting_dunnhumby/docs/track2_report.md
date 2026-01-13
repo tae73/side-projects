@@ -307,6 +307,16 @@ The analysis revealed **severe positivity violation**:
 ![CATE by Segment](../results/figures/cate_by_segment_purchase_amount.png)
 *Figure 10: CATE distribution by customer segment showing negative effects for VIP Heavy and Bulk Shoppers.*
 
+**Segment Analysis: Treatment Effect by Outcome**
+
+![Segment Bubble Analysis](../results/figures/segment_bubble.png)
+*Figure 11: Segment-level analysis showing treatment effect magnitude (bubble size) and direction (color) across outcome dimensions. Purchase amount (left) shows clear positive/negative clusters; visit count (right) shows more uniform effects.*
+
+The bubble chart reveals distinct segment clusters:
+- **Positive responders** (green/larger bubbles): Regular+H&B, Active Loyalists, Light Grocery show consistent positive effects across both purchase amount and visit count
+- **Negative responders** (red bubbles): VIP Heavy and Bulk Shoppers show negative treatment effects primarily in purchase amount
+- **Effect magnitude**: Treatment effects are more pronounced for purchase amount than visit count, suggesting campaign impact is monetary rather than behavioral
+
 **Why Negative CATE for VIP Heavy and Bulk Shoppers?**
 - **VIP Heavy**: Already high purchasers with little room for campaign-driven uplift; may experience cannibalization
 - **Bulk Shoppers**: Price-sensitive customers who respond poorly to coupon-based TypeA promotions
