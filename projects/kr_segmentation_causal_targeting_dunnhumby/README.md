@@ -382,9 +382,6 @@ Breakeven = Cost / Margin = $12.73 / 0.30 = $42.43
 - **[Track 2 Report](docs/track2_report.md)**: Causal Targeting Analysis
   - Positivity Diagnostics, CATE 추정, Policy 비교, A/B Test 설계
 
-- **[Interview Q&A](docs/interview.md)**: 3관점 프로젝트 평가
-  - Data Scientist, Marketer, 리크루터 관점 검토
-
 ---
 
 ## Project Structure
